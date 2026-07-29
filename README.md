@@ -22,11 +22,34 @@ needs a user gesture). The original brief is preserved in [BRIEF.md](BRIEF.md).
 | `Space` | Main power on/off |
 | `R` | Reverse rotors |
 | `C` | Clear all debris |
-| `1`–`9` | Drop feed stock onto the conveyor |
+| `1`–`9`, `0` | Drop feed stock onto the conveyor (the remaining items are click-only) |
 | `F1`–`F5` | Camera presets (Wide / Teeth-Eye / Top-Down / Discharge / Operator) |
 | `Tab` | Hide the interface |
 | Left-drag | Orbit · Scroll: dolly · Right-drag: pan |
 | Click over the hopper or belt | Drop the selected item at that point |
+
+**Audio starts muted.** Nothing makes a sound on load or on item drops until you
+switch the AUDIO ENGINE button on. **The camera never shakes** — there is no
+impact or load-driven screen shake anywhere in the render loop.
+
+## Feed stock
+
+Thirteen items, each with its own geometry, colliders and mechanical constants.
+The palette renders a live 3D preview of every one.
+
+| Key | Item | Mass | Make-up |
+|---|---|---|---|
+| 1 | Aluminium Can | 16 g | aluminium |
+| 2 | Steel Panel | 4.4 kg | galvanised sheet |
+| 3 | Steel Pipe | 5.8 kg | rusted steel |
+| 4 | Rebar Rod | 2.1 kg | rusted steel |
+| 5 | I-Beam Offcut | 15.2 kg | mild steel |
+| 6 | **Flat Screen TV** | 9.5 kg | glass · ABS · sheet steel · PCB |
+| 7 | **Sound System** | 14 kg | MDF · rubber cones · ferrite magnets · steel grille |
+| 8 | **Car Wheel** | 18 kg | rubber tyre · alloy rim |
+| 9 | **Microwave Oven** | 15 kg | enamelled steel · glass · ABS · transformer |
+| 0 | Engine Block | 62 kg | cast iron |
+| — | Tool Box / Cast Gear / Copper Radiator | 6.5 / 7.9 / 3.4 kg | painted steel · cast iron · copper |
 
 ---
 
@@ -59,8 +82,39 @@ src/
 ├── audio/AudioEngine.js          fully synthesised industrial audio
 ├── objects/ScrapLibrary.js       feed stock geometry + collider descriptions
 ├── utils/GeometryBatcher.js      static-prop draw-call batching
-└── ui/                           control room HUD
+└── ui/                          control room HUD + ThumbnailRenderer
 ```
+
+### Multi-material assemblies
+
+Consumer items are not single meshes. Each is a set of independent rigid bodies
+— one per material — welded together by Rapier fixed joints in a star topology
+from the heaviest part. The item falls and tumbles as one rigid object (measured
+weld drift at rest: **0–1.7 mm**), and the welds are severed the instant a part
+starts being worked, so it comes apart into materials that each fail in their
+own way.
+
+That matters because a welded appliance is effectively one rigid slab, and a
+slab wide enough to span the throat will bridge it forever. Letting it fall
+apart is both what really happens and what keeps the machine fed.
+
+Two per-material fields drive the failure style:
+
+- `shatter` (0..1) — brittle materials burst instead of parting into two tidy
+  halves. Above 0.45 the offcuts are re-armed to break again immediately and a
+  burst of shards and dust is thrown at the fracture. Glass 1.0, ferrite 0.9,
+  PCB 0.85, MDF 0.7, ABS 0.55, steel 0.1, rubber 0.0.
+- `fragmentScale` — multiplies the minimum surviving fragment volume, so glass
+  (0.18) keeps much smaller shards alive as real bodies than steel (1.0).
+
+Measured behaviour, one item dropped into a running throat:
+
+| Item | Slices | Outcome |
+|---|---|---|
+| Flat Screen TV | 59 | all 5 parts consumed; glass, ABS, steel and PCB fragments; steel chassis folds 34 mm first |
+| Microwave | 39 | enamelled shell folds **130 mm** before shearing; glass door and turntable shatter |
+| Sound System | 30 | rubber cone stretches **111 mm** before tearing; ferrite magnets snap with no deflection |
+| Car Wheel | 22 | rubber tyre tears, alloy rim deforms then shears into 8 pieces |
 
 ### Physics — off-thread Rapier
 
@@ -171,7 +225,9 @@ Two things keep it there:
   every shadow map — this alone took draw calls from ~550 to ~170.
 - An adaptive guard sacrifices **resolution first** and only steps down a
   quality tier when resolution is exhausted, because losing SSAO/DoF/AA outright
-  is far more visible than a few percent of pixels.
+  is far more visible than a few percent of pixels. It also climbs back up when
+  there is sustained headroom, so a brief hitch during load does not park you on
+  Low permanently.
 
 ### Audio
 
@@ -180,6 +236,19 @@ Fully synthesised: detuned saw/square motor stack with a gear-whine layer and
 inharmonic clang voices for impacts, granular bursts for tears, and a
 procedurally generated concrete-hall impulse response on a reverb send. Motor
 pitch bends down under load and overshoots on recovery like a real governor.
+
+The engine is built muted (`_muted = true`) and the graph is created with the
+master gain already at silence, so the AudioContext can start on the boot
+gesture without anything becoming audible. Only the UI toggle lifts it.
+
+### Item thumbnails
+
+`ThumbnailRenderer` spins up a second, temporary `WebGLRenderer` on an offscreen
+canvas, renders every feed-stock item on a neutral 3-point rig with auto-framing
+(3/4 angle, object filling ~86 % of frame), and is disposed immediately
+afterwards — browsers cap live WebGL contexts and the main renderer must never
+lose its own. Cards show an animated placeholder until their PNG arrives and
+degrade to a monogram if it never does.
 
 ---
 

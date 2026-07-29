@@ -15,6 +15,7 @@ const _box = new THREE.Box3();
 const _mat3 = new THREE.Matrix3();
 const _v3 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
+const _engage = new THREE.Vector3();
 
 const WORLD_X = new THREE.Vector3(1, 0, 0);
 
@@ -38,6 +39,7 @@ export class FragmentManager {
     this.entries = new Map();
     this.sliceQueue = [];
     this.time = 0;
+    this._nextAssembly = 1;
     /** Normalised rotor speed (0..1), fed from the physics snapshot. */
     this.rpmNorm = 0;
     this.stats = { fragments: 0, slices: 0, triangles: 0 };
@@ -107,6 +109,140 @@ export class FragmentManager {
     this.entries.set(id, entry);
     this._refreshStats();
     return entry;
+  }
+
+  /**
+   * Spawn a multi-part consumer item (TV, speaker, wheel, appliance).
+   *
+   * Each part is its own rigid body with its own material, density and
+   * fracture behaviour, welded to the others by fixed joints in the physics
+   * worker. The object therefore falls and tumbles as one item, but the
+   * moment the teeth get hold of a part its welds snap and the assembly comes
+   * apart into materials that each fail in their own way - glass shatters,
+   * plastic cracks, rubber stretches, alloy folds.
+   */
+  spawnAssembly(typeId, position, velocity) {
+    const def = getScrapDef(typeId);
+    if (!def.assembly || !Array.isArray(def.parts)) {
+      return this.spawn(typeId, position, velocity);
+    }
+    if (this.entries.size + def.parts.length > SETTINGS.maxScrapBodies) {
+      this._cullOldest(def.parts.length + 4);
+    }
+
+    const assemblyId = `asm${this._nextAssembly++}`;
+    const baseQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+      (Math.random() - 0.5) * 0.5,
+      Math.random() * Math.PI * 2,
+      (Math.random() - 0.5) * 0.5
+    ));
+
+    // Heaviest part first: it becomes the hub of the weld star.
+    const parts = def.parts.slice().sort((a, b) => (b.mass || 0) - (a.mass || 0));
+
+    const payload = [];
+    const pending = [];
+
+    for (const part of parts) {
+      const built = part.build();
+      const geometry = built.geometry.clone();
+      built.geometry.dispose();
+      ensureHeatAttributes(geometry, 0, -1000);
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+
+      const spec = getMaterialSpec(part.material);
+      const material = getMetalMaterial(part.material, this.quality);
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.matrixAutoUpdate = false;
+
+      const partQuat = part.rotation
+        ? new THREE.Quaternion().setFromEuler(new THREE.Euler(...part.rotation))
+        : new THREE.Quaternion();
+      mesh.quaternion.copy(baseQuat).multiply(partQuat);
+
+      _v3.set(...(part.offset || [0, 0, 0])).applyQuaternion(baseQuat);
+      mesh.position.copy(position).add(_v3);
+      mesh.updateMatrix();
+      this.group.add(mesh);
+
+      const volume = Math.max(computeVolume(geometry), 1e-6);
+      const density = (part.mass || 1) / volume;
+
+      payload.push({
+        object3D: mesh,
+        shapes: built.colliders,
+        opts: {
+          density,
+          friction: 0.68,
+          restitution: 0.05,
+          ccd: (part.thickness ?? 0.01) < 0.003,
+          linvel: velocity ? [velocity.x, velocity.y, velocity.z] : undefined,
+          angvel: [0, 0, 0],
+        },
+      });
+      pending.push({ mesh, part, spec, density, volume });
+    }
+
+    const ids = this.physics.addAssembly(payload);
+
+    const created = [];
+    ids.forEach((id, i) => {
+      const p = pending[i];
+      const entry = {
+        id, mesh: p.mesh, def, spec: p.spec, density: p.density,
+        material: p.part.material,
+        mass: p.part.mass,
+        partName: p.part.name,
+        assemblyId,
+        // The heaviest part is the hub of the weld star in the worker.
+        assemblyBase: i === 0,
+        bonded: true,
+        damage: 0,
+        work: 0,
+        generation: 0,
+        birth: this.time,
+        lastDeform: -1,
+        lastSlice: -1,
+        volume: p.volume,
+        thickness: p.part.thickness,
+        pendingSlice: false,
+      };
+      this.entries.set(id, entry);
+      created.push(entry);
+    });
+
+    this._refreshStats();
+    return created;
+  }
+
+  /**
+   * Sever an assembled part from its siblings. Called as soon as a part takes
+   * real damage, so the item visibly comes apart before it is shredded.
+   *
+   * The whole assembly is released at once: a welded appliance is effectively
+   * one rigid slab, and a slab wide enough to span the throat will bridge it
+   * forever. Letting it fall apart is both what really happens and what keeps
+   * the machine fed.
+   */
+  _unbond(entry) {
+    if (!entry.bonded) return;
+    const ids = [];
+    if (entry.assemblyId) {
+      for (const other of this.entries.values()) {
+        if (other.assemblyId !== entry.assemblyId || !other.bonded) continue;
+        other.bonded = false;
+        ids.push(other.id);
+      }
+    } else {
+      entry.bonded = false;
+      ids.push(entry.id);
+    }
+    this.physics.breakJoints(ids);
+    this.hooks.onUnbond?.(entry);
   }
 
   /* -------------------------------------------------------------- contacts */
@@ -223,6 +359,8 @@ export class FragmentManager {
       entry.pendingSlice = true;
       this.sliceQueue.push({ entry, point: _wp.clone(), normal: _wn.clone(), force: rec.cutterForce });
     } else if (entry.damage > 0.18) {
+      // Once a part is genuinely being worked it tears free of its assembly.
+      if (entry.bonded) this._unbond(entry);
       this._maybeDeform(entry, rec, dt, grind);
     }
   }
@@ -349,6 +487,8 @@ export class FragmentManager {
     const entry = job.entry;
     const mesh = entry.mesh;
     entry.pendingSlice = false;
+    // A part that is being cut is definitively no longer bolted to its siblings.
+    if (entry.bonded) this._unbond(entry);
 
     const plane = { normal: new THREE.Vector3(), point: new THREE.Vector3(), kind: '' };
     if (!this._choosePlane(entry, job.point, plane)) {
@@ -400,6 +540,19 @@ export class FragmentManager {
     this.hooks.onTear?.(job.point, Math.min(1, job.force / 14000), spec, plane.kind);
     this.hooks.onSpark?.(job.point, worldNormal, Math.min(1, 0.5 + job.force / 9000) * spec.sparkYield, spec, true);
 
+    // Shatter profile: brittle materials do not part into two tidy halves,
+    // they burst. Re-arm the offcuts so they break again immediately, and
+    // throw a burst of shards and dust at the fracture.
+    const shatter = spec.shatter ?? 0;
+    if (shatter > 0.45) {
+      this.hooks.onShrapnel?.(job.point, Math.round(4 + shatter * 16), spec);
+      this.hooks.onDust?.(job.point, shatter * 0.8, spec);
+      for (const child of [a, b]) {
+        if (!child) continue;
+        if (child.generation < 3 && Math.random() < shatter * 0.85) child.damage = 1;
+      }
+    }
+
     this._destroy(entry);
     this.stats.slices++;
 
@@ -413,11 +566,16 @@ export class FragmentManager {
   _emitFragment(geometry, parent, worldNormal, kick, parentVel) {
     const volume = computeVolume(geometry);
 
+    // Brittle materials keep much smaller offcuts alive as real bodies, which
+    // is what makes glass read as a spray of shards rather than two neat
+    // halves; ductile metal keeps the default floor.
+    const minVolume = SETTINGS.minFragmentVolume * (parent.spec.fragmentScale ?? 1);
+
     // Stop endless subdivision: deep-generation offcuts become shrapnel and
     // dust rather than yet another rigid body.
     const tooDeep = parent.generation >= 4;
 
-    if (tooDeep || volume < SETTINGS.minFragmentVolume || geometry.attributes.position.count < 12) {
+    if (tooDeep || volume < minVolume || geometry.attributes.position.count < 12) {
       // Too small (or too far down the chain) to be worth a rigid body.
       recenter(geometry, _c);
       parent.mesh.localToWorld(_c);
@@ -487,16 +645,31 @@ export class FragmentManager {
   /* -------------------------------------------------------------- lifecycle */
 
   _destroy(entry) {
+    this._releaseAssembly(entry);
     this.group.remove(entry.mesh);
     entry.mesh.geometry.dispose();
     this.entries.delete(entry.id);
     this.physics.removeBody(entry.id);
   }
 
+  /**
+   * Welds fan out from the heaviest part, so once that part is gone every
+   * joint went with it. Mirror that on the main thread or the siblings keep
+   * claiming to be bonded to something that no longer exists.
+   */
+  _releaseAssembly(entry) {
+    if (!entry.assemblyId) return;
+    if (!entry.assemblyBase) return;
+    for (const other of this.entries.values()) {
+      if (other !== entry && other.assemblyId === entry.assemblyId) other.bonded = false;
+    }
+  }
+
   onPhysicsRemoved(ids) {
     for (const id of ids) {
       const e = this.entries.get(id);
       if (!e) continue;
+      this._releaseAssembly(e);
       this.group.remove(e.mesh);
       e.mesh.geometry.dispose();
       this.entries.delete(id);
@@ -567,7 +740,11 @@ export class FragmentManager {
       const bs = geo.boundingSphere;
       if (!bs) continue;
 
-      const p = entry.mesh.position;
+      // Assembly parts are authored around the ASSEMBLY origin, not their own
+      // centre of mass, so the bounding sphere is offset from mesh.position.
+      // Testing the raw mesh origin makes big multi-part items look like they
+      // are nowhere near the teeth, and they bridge the throat forever.
+      const p = _engage.copy(bs.center).applyQuaternion(entry.mesh.quaternion).add(entry.mesh.position);
       if (box.distanceToPoint(p) > bs.radius) continue;
 
       const resist = this._resistance(entry);
@@ -591,6 +768,7 @@ export class FragmentManager {
 
       // Metal bends before it lets go: work the section as damage builds.
       if (entry.damage > 0.18 && entry.damage < 1) {
+        if (entry.bonded) this._unbond(entry);
         this._maybeDeform(entry, {
           px: _wp.x, py: _wp.y, pz: _wp.z,
           nx: 0, ny: -1, nz: 0,

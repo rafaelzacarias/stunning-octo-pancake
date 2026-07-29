@@ -700,18 +700,31 @@
 .sio-panel--feed .sio-panel-body { min-height: 0; padding: 9px; }
 
 .sio-cards {
+  --sio-thumb: 46px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 40vh;
+  /* 13 stock types no longer fit: the list scrolls, the panel never does. */
+  max-height: min(46vh, 436px);
   overflow-y: auto;
-  padding-right: 4px;
+  overscroll-behavior: contain;
+  padding-right: 6px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-color: rgba(255, 176, 32, 0.34) rgba(255, 255, 255, 0.05);
 }
-.sio-cards::-webkit-scrollbar { width: 6px; }
-.sio-cards::-webkit-scrollbar-track { background: transparent; }
-.sio-cards::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 3px; }
+.sio-cards::-webkit-scrollbar { width: 7px; }
+.sio-cards::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px;
+}
+.sio-cards::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255, 176, 32, 0.52), rgba(255, 176, 32, 0.24));
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.sio-cards::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 176, 32, 0.8), rgba(255, 176, 32, 0.42));
+}
 
 .sio-card { position: relative; }
 
@@ -720,7 +733,7 @@
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 8px 46px 8px 8px;
+  padding: 6px 42px 6px 6px;
   font: inherit;
   color: inherit;
   text-align: left;
@@ -738,18 +751,132 @@
 .sio-card-main:active { transform: translateX(2px) scale(0.995); }
 .sio-card-main:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
 
-.sio-card-key {
+/* ---- recessed preview well ---- */
+
+.sio-thumb {
+  position: relative;
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: var(--sio-thumb);
+  height: var(--sio-thumb);
+  overflow: hidden;
+  border-radius: 2px;
+  background:
+    radial-gradient(circle at 50% 34%, rgba(88, 104, 118, 0.34), rgba(6, 8, 10, 0.94) 74%),
+    linear-gradient(180deg, #11151a, #05070a);
+  box-shadow: inset 0 2px 7px rgba(0, 0, 0, 0.8);
+  transition: box-shadow 0.16s ease;
+}
+.sio-card-main:hover .sio-thumb {
+  box-shadow: inset 0 2px 7px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 176, 32, 0.28);
+}
+
+.sio-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.3s ease, transform 0.34s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.sio-thumb-ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition: opacity 0.3s ease;
+}
+/* faint CRT scanlines so an empty well still reads as a viewport */
+.sio-thumb-ph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.5;
+}
+
+.sio-thumb-glyph {
+  position: absolute;
+  inset: 18%;
+  color: var(--sio-cyan);
+  opacity: 0.14;
+}
+.sio-thumb-glyph svg { display: block; width: 100%; height: 100%; }
+
+.sio-thumb-mono {
+  position: relative;
+  font-family: var(--sio-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-indent: 0.08em;
+  color: rgba(255, 176, 32, 0.62);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.8);
+}
+
+.sio-thumb-shimmer {
+  position: absolute;
+  left: -30%;
+  right: -30%;
+  top: 0;
+  height: 36%;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(51, 214, 255, 0.16) 46%,
+    rgba(255, 255, 255, 0.1) 56%,
+    transparent
+  );
+  animation: sio-thumb-scan 2.6s ease-in-out infinite;
+  transition: opacity 0.3s ease;
+}
+
+@keyframes sio-thumb-scan {
+  0% { transform: translateY(-110%); opacity: 0; }
+  16% { opacity: 0.95; }
+  84% { opacity: 0.95; }
+  100% { transform: translateY(285%); opacity: 0; }
+}
+
+/* inner hairline + vignette, painted over the image */
+.sio-thumb-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 44%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.5) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  border-radius: 2px;
+}
+
+.sio-thumb.is-ready .sio-thumb-img { opacity: 1; transform: none; }
+.sio-thumb.is-ready .sio-thumb-ph { opacity: 0; }
+.sio-thumb.is-ready .sio-thumb-shimmer { opacity: 0; animation: none; }
+
+.sio-card-key {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
   display: grid;
   place-items: center;
   font-family: var(--sio-mono);
-  font-size: 10px;
+  font-size: 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   color: var(--sio-amber);
-  background: rgba(255, 176, 32, 0.1);
-  border: 1px solid rgba(255, 176, 32, 0.28);
+  background: rgba(6, 8, 10, 0.82);
+  border: 1px solid rgba(255, 176, 32, 0.34);
   border-radius: 2px;
+  pointer-events: none;
 }
 
 .sio-card-text {
@@ -757,6 +884,7 @@
   flex-direction: column;
   min-width: 0;
   flex: 1 1 auto;
+  gap: 1px;
 }
 
 .sio-card-label {
@@ -1548,6 +1676,7 @@
     --sio-pad: 12px;
     font-size: 12.5px;
   }
+  .sio-cards { --sio-thumb: 42px; max-height: min(44vh, 400px); }
   .sio-gauge { max-width: 200px; }
   .sio-gauge-num { font-size: 26px; }
   .sio-fps-value { font-size: 23px; }
@@ -1565,7 +1694,10 @@
   .sio-panel-body { padding: 10px; gap: 10px; }
   .sio-switch-hint { display: none; }
   .sio-card-hint { display: none; }
-  .sio-cards { max-height: 32vh; }
+  .sio-cards { --sio-thumb: 36px; max-height: 34vh; padding-right: 5px; }
+  .sio-card-main { gap: 7px; padding: 5px 38px 5px 5px; }
+  .sio-card-burst { right: 5px; padding: 4px 6px; }
+  .sio-thumb-mono { font-size: 11px; }
   .sio-gauge { max-width: 178px; }
   .sio-gauge-readout { margin-top: -18px; }
   .sio-gauge-num { font-size: 22px; }
@@ -1577,8 +1709,13 @@
 }
 
 @media (max-height: 780px) {
-  .sio-cards { max-height: 26vh; }
+  .sio-cards { --sio-thumb: 36px; max-height: 30vh; }
   .sio-panel--help .sio-help-body { max-height: 170px; }
+}
+
+@media (max-height: 640px) {
+  .sio-cards { --sio-thumb: 32px; max-height: 27vh; gap: 4px; }
+  .sio-card-hint { display: none; }
 }
 
 /* ------------------------------------------------------------------
@@ -1599,6 +1736,7 @@
   .sio-gate-grid,
   .sio-boot-scan,
   .sio-boot-sweep,
+  .sio-thumb-shimmer,
   .sio-gate-btn-ring {
     display: none;
   }

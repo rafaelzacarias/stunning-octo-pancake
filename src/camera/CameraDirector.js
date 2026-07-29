@@ -3,8 +3,13 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { LAYOUT } from '../config.js';
 
 /**
- * CameraDirector — orbit control, cinematic preset moves, trauma-driven
- * screen shake and autofocus for the depth-of-field pass.
+ * CameraDirector — orbit control, cinematic preset moves and autofocus for the
+ * depth-of-field pass.
+ *
+ * The camera transform is intentionally free of any impact/load-driven shake.
+ * Nothing in this module perturbs position or rotation outside of user orbit
+ * input and explicit preset transitions, so the view stays rock steady even
+ * under a full throat jam.
  */
 
 export const CAMERA_PRESETS = [
@@ -33,13 +38,6 @@ export class CameraDirector {
     this.controls.maxPolarAngle = Math.PI * 0.495;
     this.controls.screenSpacePanning = true;
     this.controls.target.set(0, 1.15, 0.4);
-
-    this.trauma = 0;
-    this.traumaDecay = 1.35;
-    this._shakeOffset = new THREE.Vector3();
-    this._shakeEuler = new THREE.Euler();
-    this._baseQuat = new THREE.Quaternion();
-    this._noiseT = Math.random() * 1000;
 
     this.transition = null;
     this.activePreset = 'wide';
@@ -80,15 +78,13 @@ export class CameraDirector {
     };
   }
 
-  /** Add camera trauma. Squared response makes small hits subtle and big hits brutal. */
-  addTrauma(amount) {
-    this.trauma = Math.min(1, this.trauma + amount);
-  }
+  /**
+   * Retained as a no-op so gameplay code can keep reporting impact severity
+   * without the camera ever moving. Screen shake is deliberately disabled.
+   */
+  addTrauma() {}
 
-  update(dt, load) {
-    // Undo last frame's shake before OrbitControls reads the transform.
-    this.camera.position.sub(this._shakeOffset);
-
+  update(dt) {
     if (this.transition) {
       const tr = this.transition;
       tr.t += dt;
@@ -104,28 +100,6 @@ export class CameraDirector {
     }
 
     this.controls.update();
-
-    // Sustained machine load feeds a low-level rumble on top of impact trauma.
-    const rumble = Math.max(0, load - 0.18) * 0.24;
-    const shake = Math.min(1, this.trauma + rumble);
-    this.trauma = Math.max(0, this.trauma - this.traumaDecay * dt);
-
-    if (shake > 0.0015) {
-      this._noiseT += dt * 34;
-      const s = shake * shake;
-      const amp = 0.021 * s;
-      const ox = (perlin1(this._noiseT) ) * amp;
-      const oy = (perlin1(this._noiseT + 133.7)) * amp;
-      const oz = (perlin1(this._noiseT + 421.9)) * amp * 0.6;
-      this._shakeOffset.set(ox, oy, oz);
-      this.camera.position.add(this._shakeOffset);
-
-      // A touch of roll sells the impact without inducing nausea.
-      const roll = perlin1(this._noiseT + 77.1) * 0.009 * s;
-      this.camera.rotateZ(roll);
-    } else {
-      this._shakeOffset.set(0, 0, 0);
-    }
 
     if (this.autoFocus && this.postfx) {
       // Focus on whatever the orbit target is, biased toward the throat when
@@ -145,21 +119,4 @@ export class CameraDirector {
   onResize() { this.controls.update(); }
 
   dispose() { this.controls.dispose(); }
-}
-
-/** Cheap value-noise in 1D — smoother and less jittery than Math.random shake. */
-function perlin1(x) {
-  const i = Math.floor(x);
-  const f = x - i;
-  const u = f * f * (3 - 2 * f);
-  const a = hash1(i), b = hash1(i + 1);
-  return (a + (b - a) * u) * 2 - 1;
-}
-
-function hash1(n) {
-  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967295;
 }

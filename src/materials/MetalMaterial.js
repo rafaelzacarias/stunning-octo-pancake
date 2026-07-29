@@ -1,11 +1,28 @@
 import * as THREE from 'three';
 import { createMetalTextureSet } from './ProceduralTextures.js';
-import { injectHeatShader } from './HeatShader.js';
+import { patchMetalShader } from './HeatShader.js';
 
 /**
  * Physical material library. Every entry carries both its render description
  * and the mechanical constants the destruction solver needs, so "aluminium"
  * means one thing across graphics, physics and audio.
+ *
+ * Mechanical contract:
+ *   shearImpulse   N·s at the teeth before the section lets go. The solver
+ *                  derives `toughness = max(0.25, shearImpulse / 1200)`, so
+ *                  LOWER shreds FASTER.
+ *   yieldImpulse   advisory only in the current model.
+ *   ductility      0..1 — dent/bend amplitude and how ragged a torn edge is.
+ *   hardness       0..1 — audio timbre.
+ *   sparkYield     0..1.6 — spark count. NON-METALS ARE ZERO.
+ *   shatter        0..1 — tendency to burst into many pieces at once rather
+ *                  than shear cleanly along the tooth path.
+ *   fragmentScale  multiplier on the minimum surviving fragment volume;
+ *                  below 1 keeps smaller debris alive as real bodies.
+ *
+ * Render contract: the generated roughness/metalness maps are ABSOLUTE, so
+ * `getMetalMaterial` pins both scalars and never scales them down. Entries
+ * flagged `dielectric` get metalness 0 and no metalness map at all.
  */
 export const MATERIAL_LIBRARY = {
   mildSteel: {
@@ -24,6 +41,7 @@ export const MATERIAL_LIBRARY = {
     hardness: 0.78,         // audio timbre + spark yield
     sparkYield: 1.0,
     heatCapacity: 0.9,
+    shatter: 0.08, fragmentScale: 1.0,
   },
   hardenedSteel: {
     texture: 'steel',
@@ -34,6 +52,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0xd2d8de,
     yieldImpulse: 1560, shearImpulse: 5200, ductility: 0.22,
     hardness: 1.0, sparkYield: 1.6, heatCapacity: 1.0,
+    shatter: 0.06, fragmentScale: 1.0,
   },
   aluminium: {
     texture: 'aluminum',
@@ -44,6 +63,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0xdfe4e8,
     yieldImpulse: 160, shearImpulse: 520, ductility: 0.88,
     hardness: 0.24, sparkYield: 0.25, heatCapacity: 0.45,
+    shatter: 0.04, fragmentScale: 1.0,
   },
   castIron: {
     texture: 'castIron',
@@ -54,6 +74,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0x8f9296,
     yieldImpulse: 950, shearImpulse: 1900, ductility: 0.08, // brittle: snaps early
     hardness: 0.9, sparkYield: 1.35, heatCapacity: 0.85,
+    shatter: 0.45, fragmentScale: 0.9,
   },
   galvanised: {
     texture: 'galvanized',
@@ -64,6 +85,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0xc7cdd2,
     yieldImpulse: 400, shearImpulse: 1200, ductility: 0.72,
     hardness: 0.6, sparkYield: 0.8, heatCapacity: 0.75,
+    shatter: 0.1, fragmentScale: 1.0,
   },
   copper: {
     texture: 'copper',
@@ -74,6 +96,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0xc98a5e,
     yieldImpulse: 240, shearImpulse: 720, ductility: 0.95,
     hardness: 0.3, sparkYield: 0.15, heatCapacity: 0.5,
+    shatter: 0.02, fragmentScale: 1.0,
   },
   paintedSteel: {
     texture: 'paintedSteel',
@@ -85,6 +108,7 @@ export const MATERIAL_LIBRARY = {
     tint: 0xffffff,
     yieldImpulse: 500, shearImpulse: 1600, ductility: 0.66,
     hardness: 0.66, sparkYield: 0.85, heatCapacity: 0.8,
+    shatter: 0.1, fragmentScale: 1.0,
   },
   rustedSteel: {
     texture: 'rustedSteel',
@@ -95,6 +119,149 @@ export const MATERIAL_LIBRARY = {
     tint: 0xa08272,
     yieldImpulse: 320, shearImpulse: 950, ductility: 0.3,
     hardness: 0.55, sparkYield: 0.55, heatCapacity: 0.7,
+    shatter: 0.2, fragmentScale: 1.0,
+  },
+
+  /* ------------------------------------------------- consumer-goods set */
+
+  /* Screen / door / turntable glass. Reads as a real panel: a sharp
+   * clearcoat lobe over a near-black smoked body with genuine transmission.
+   * Almost no ductility, the lowest shear resistance in the library, and it
+   * bursts rather than tears — hence shatter 1.0 and the smallest surviving
+   * fragment volume of anything here. */
+  glass: {
+    texture: 'glass',
+    textureRepeat: [1.6, 1.6],
+    density: 2500,
+    dielectric: true,
+    roughness: 0.06, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 1.5,
+    tint: 0xdfeae8,
+    transmission: 0.45, ior: 1.52, thicknessMeters: 0.006,
+    clearcoat: 0.85, clearcoatRoughness: 0.05,
+    doubleSided: true,
+    normalScale: 0.35, roughnessFloor: 0.12, scorch: 0.3,
+    yieldImpulse: 200, shearImpulse: 260, ductility: 0.02,
+    hardness: 0.85, sparkYield: 0.0, heatCapacity: 0.35,
+    shatter: 1.0, fragmentScale: 0.18,
+  },
+  /* Textured black ABS: bezels, control panels, stands. Moulded pebble
+   * grain, a whisper of clearcoat, no metalness map anywhere near it. */
+  abs: {
+    texture: 'abs',
+    textureRepeat: [4.5, 4.5],
+    density: 1050,
+    dielectric: true,
+    roughness: 0.44, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 1.0,
+    tint: 0xffffff,
+    clearcoat: 0.25, clearcoatRoughness: 0.5,
+    normalScale: 1.0, roughnessFloor: 0.18, scorch: 0.3,
+    yieldImpulse: 260, shearImpulse: 600, ductility: 0.25,
+    hardness: 0.35, sparkYield: 0.0, heatCapacity: 0.25,
+    shatter: 0.55, fragmentScale: 0.7,
+  },
+  /* Tyre rubber and driver surrounds. Deliberately the toughest non-metal
+   * in shear: it stretches, necks and drags on the teeth for a long time
+   * before it finally tears, and it never shatters or sparks. */
+  rubber: {
+    texture: 'rubber',
+    textureRepeat: [6.0, 6.0],
+    density: 1100,
+    dielectric: true,
+    roughness: 0.88, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.55,
+    tint: 0xffffff,
+    sheen: 0.25, sheenRoughness: 0.9,
+    normalScale: 1.15, roughnessFloor: 0.3, scorch: 0.3,
+    yieldImpulse: 900, shearImpulse: 2100, ductility: 0.98,
+    hardness: 0.1, sparkYield: 0.0, heatCapacity: 0.3,
+    shatter: 0.0, fragmentScale: 1.0,
+  },
+  /* Speaker cabinet: veneered MDF under satin lacquer. Splinters into
+   * chunks along the board rather than bending. */
+  mdf: {
+    texture: 'mdf',
+    textureRepeat: [2.2, 2.2],
+    density: 750,
+    dielectric: true,
+    roughness: 0.36, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.9,
+    tint: 0xffffff,
+    clearcoat: 0.35, clearcoatRoughness: 0.28,
+    normalScale: 0.9, roughnessFloor: 0.16, scorch: 0.3,
+    yieldImpulse: 300, shearImpulse: 700, ductility: 0.15,
+    hardness: 0.2, sparkYield: 0.0, heatCapacity: 0.2,
+    shatter: 0.7, fragmentScale: 0.6,
+  },
+  /* Populated circuit board. The one "non-metal" that keeps a metalness
+   * map: its tinned pads are real solder and are what allow the token
+   * 0.1 spark yield. The laminate itself is glass-epoxy and disintegrates. */
+  pcb: {
+    texture: 'pcb',
+    textureRepeat: [5.0, 5.0],
+    density: 1900,
+    roughness: 0.3, metalness: 1.0,
+    anisotropy: 0,
+    envMapIntensity: 1.0,
+    tint: 0xffffff,
+    normalScale: 1.0, roughnessFloor: 0.14, scorch: 0.3,
+    yieldImpulse: 160, shearImpulse: 350, ductility: 0.06,
+    hardness: 0.45, sparkYield: 0.1, heatCapacity: 0.25,
+    shatter: 0.85, fragmentScale: 0.3,
+  },
+  /* Bright cast aluminium wheel rim: lacquered, machined faces, ductile
+   * enough to fold before it finally parts. */
+  alloy: {
+    texture: 'alloy',
+    textureRepeat: [3.0, 3.0],
+    density: 2700,
+    roughness: 0.3, metalness: 1.0,
+    anisotropy: 0.5, anisotropyRotation: 0,
+    envMapIntensity: 1.3,
+    tint: 0xe6eaee,
+    clearcoat: 0.18, clearcoatRoughness: 0.26,
+    normalScale: 0.85, roughnessFloor: 0.24, scorch: 1.0,
+    yieldImpulse: 520, shearImpulse: 1500, ductility: 0.75,
+    hardness: 0.4, sparkYield: 0.4, heatCapacity: 0.45,
+    shatter: 0.05, fragmentScale: 1.0,
+  },
+  /* White-enamelled appliance sheet steel. Thin, ductile, folds and tears
+   * like a beer can with a paint film on it. */
+  applianceSteel: {
+    texture: 'applianceSteel',
+    textureRepeat: [2.6, 2.6],
+    density: 7850,
+    roughness: 0.34, metalness: 1.0,
+    anisotropy: 0.15, anisotropyRotation: 0,
+    envMapIntensity: 1.05,
+    tint: 0xffffff,
+    clearcoat: 0.6, clearcoatRoughness: 0.28,
+    normalScale: 0.8, roughnessFloor: 0.16, scorch: 0.9,
+    yieldImpulse: 380, shearImpulse: 1100, ductility: 0.7,
+    hardness: 0.62, sparkYield: 0.8, heatCapacity: 0.8,
+    shatter: 0.1, fragmentScale: 1.0,
+  },
+  /* Sintered ceramic magnet. Hard, dense, utterly brittle: it explodes into
+   * dark grit the moment a tooth loads it, and being a ceramic it cannot
+   * spark no matter how hard it is. */
+  ferrite: {
+    texture: 'ferrite',
+    textureRepeat: [5.0, 5.0],
+    density: 4900,
+    dielectric: true,
+    roughness: 0.56, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.7,
+    tint: 0xffffff,
+    normalScale: 1.0, roughnessFloor: 0.25, scorch: 0.3,
+    yieldImpulse: 260, shearImpulse: 400, ductility: 0.04,
+    hardness: 0.95, sparkYield: 0.0, heatCapacity: 0.4,
+    shatter: 0.9, fragmentScale: 0.35,
   },
 };
 
@@ -112,15 +279,17 @@ export function setEnvironmentMap(envMap) {
 
 function getTextures(spec, quality) {
   const size = quality === 'low' ? 256 : quality === 'medium' ? 512 : 1024;
-  const key = `${spec.texture}:${size}`;
+  // ScrapLibrary lays down 1.4 uv per metre, so the default puts one texture
+  // tile every ~20 cm of real surface. Presets whose features have a real
+  // physical size (circuit traces, tyre grain, veneer figure) override it.
+  const repeat = spec.textureRepeat || [3.5, 3.5];
+  const key = `${spec.texture}:${size}:${repeat[0]}x${repeat[1]}`;
   let set = textureCache.get(key);
   if (!set) {
     set = createMetalTextureSet(spec.texture, {
       size,
       seed: hashString(spec.texture),
-      // ScrapLibrary lays down 1.4 uv per metre, so this puts one texture
-      // tile every ~20 cm of real surface.
-      repeat: [3.5, 3.5],
+      repeat,
     });
     textureCache.set(key, set);
   }
@@ -144,41 +313,69 @@ export function getMetalMaterial(name, quality = 'high') {
 
   const spec = MATERIAL_LIBRARY[name] || MATERIAL_LIBRARY.mildSteel;
   const tex = getTextures(spec, quality);
+  const dielectric = !!spec.dielectric;
+  const ns = spec.normalScale !== undefined ? spec.normalScale : 0.85;
 
   const mat = new THREE.MeshPhysicalMaterial({
     color: spec.tint,
     map: tex.map,
     normalMap: tex.normalMap,
     roughnessMap: tex.roughnessMap,
-    metalnessMap: tex.metalnessMap,
     aoMap: tex.aoMap,
     // The generated maps encode ABSOLUTE roughness/metalness per preset.
     // three multiplies map * scalar, so the scalars must stay at 1.0 —
     // anything lower drives scratch texels into mirror-polish territory and
     // the surface breaks up into blown-out white streaks.
     roughness: 1.0,
-    metalness: 1.0,
+    metalness: dielectric ? 0.0 : 1.0,
     envMapIntensity: spec.envMapIntensity,
-    normalScale: new THREE.Vector2(0.85, 0.85),
+    normalScale: new THREE.Vector2(ns, ns),
     aoMapIntensity: 0.85,
     emissive: 0x000000,
-    side: THREE.FrontSide,
+    side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     dithering: true,
   });
 
+  // A dielectric gets NO metalness map at all. Pinning the scalar to 0 is
+  // not enough on its own — an assigned map would still be sampled, and a
+  // single stray bright texel turns glass or black plastic into chrome.
+  if (!dielectric) mat.metalnessMap = tex.metalnessMap;
+
   // KHR-style anisotropic specular: this is what makes brushed steel read as
   // brushed steel instead of chrome under the studio HDRI.
-  if (quality !== 'low') {
+  if (quality !== 'low' && spec.anisotropy) {
     mat.anisotropy = spec.anisotropy;
-    mat.anisotropyRotation = spec.anisotropyRotation;
+    mat.anisotropyRotation = spec.anisotropyRotation || 0;
   }
   if (spec.clearcoat) {
     mat.clearcoat = spec.clearcoat;
-    mat.clearcoatRoughness = spec.clearcoatRoughness;
+    mat.clearcoatRoughness = spec.clearcoatRoughness !== undefined ? spec.clearcoatRoughness : 0.3;
+  }
+  if (spec.sheen) {
+    mat.sheen = spec.sheen;
+    mat.sheenRoughness = spec.sheenRoughness !== undefined ? spec.sheenRoughness : 0.8;
+  }
+  // Transmission costs a whole extra scene pass, so only the materials that
+  // genuinely have to read as glass opt in, and never at low quality.
+  if (spec.transmission && quality !== 'low') {
+    mat.transmission = spec.transmission;
+    mat.thickness = spec.thicknessMeters !== undefined ? spec.thicknessMeters : 0.005;
+  }
+  if (spec.ior) mat.ior = spec.ior;
+  if (spec.transparent) {
+    mat.transparent = true;
+    mat.opacity = spec.opacity !== undefined ? spec.opacity : 1.0;
   }
   if (sharedEnvMap) mat.envMap = sharedEnvMap;
 
-  injectHeatShader(mat, { scorch: 1.0 });
+  // Every material goes through the patch: it enables the shear-heat channel
+  // and, just as importantly, clamps the authored roughness floor. Non-metals
+  // char instead of glowing, so they run a much weaker scorch term.
+  patchMetalShader(mat, {
+    heat: true,
+    roughnessFloor: spec.roughnessFloor !== undefined ? spec.roughnessFloor : 0.16,
+    scorch: spec.scorch !== undefined ? spec.scorch : 1.0,
+  });
   mat.userData.spec = spec;
   materialCache.set(key, mat);
   return mat;

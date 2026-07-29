@@ -106,6 +106,8 @@ export class PhysicsBridge {
     this.rpm = msg.rpm;
     this.load = msg.load;
     this.bodyCount = msg.bodies;
+    this.welds = msg.welds ?? 0;
+    this.weldFailures = msg.weldFailures ?? 0;
     this.stepMs = msg.stepMs;
 
     // Hand the buffers back so the worker can reuse them.
@@ -146,6 +148,50 @@ export class PhysicsBridge {
   removeBody(id) {
     this.registry.delete(id);
     this.worker.postMessage({ type: 'removeBody', id });
+  }
+
+  /**
+   * Spawn several bodies welded into one rigid assembly.
+   * @param {Array<{object3D: THREE.Object3D, shapes: object[], opts: object}>} parts
+   * @returns {number[]} the allocated body ids, in the order given
+   */
+  addAssembly(parts) {
+    const payload = [];
+    const ids = [];
+    for (const part of parts) {
+      const id = part.opts?.id ?? this.allocId();
+      ids.push(id);
+      this.registry.set(id, {
+        object3D: part.object3D, meta: part.opts?.meta || {}, warm: false,
+        speed: 0, sleeping: false, vel: new THREE.Vector3(),
+      });
+      const p = part.object3D.position;
+      const q = part.object3D.quaternion;
+      const o = part.opts || {};
+      payload.push({
+        id,
+        kind: 'dynamic',
+        shapes: part.shapes,
+        position: [p.x, p.y, p.z],
+        quaternion: [q.x, q.y, q.z, q.w],
+        density: o.density ?? 7800,
+        friction: o.friction ?? 0.62,
+        restitution: o.restitution ?? 0.08,
+        linearDamping: o.linearDamping ?? 0.06,
+        angularDamping: o.angularDamping ?? 0.14,
+        ccd: o.ccd ?? false,
+        linvel: o.linvel,
+        angvel: o.angvel,
+      });
+    }
+    this.worker.postMessage({ type: 'addAssembly', parts: payload });
+    return ids;
+  }
+
+  /** Sever the welds holding these bodies to their assembly. */
+  breakJoints(ids) {
+    if (!ids || !ids.length) return;
+    this.worker.postMessage({ type: 'breakJoints', ids });
   }
 
   removeBodies(ids) {

@@ -661,6 +661,27 @@ const PRESETS = {
     rust: 0.85, scratches: 0.30,
     grain: 0.045, pitting: 0.35, spangle: false, paint: null, pal: RUST_PAL,
   },
+  /* Bright cast + machined aluminium alloy (wheel rims). Slightly brighter
+   * and cooler than wrought aluminium, with sand-cast micro pitting left in
+   * the unmachined pockets and a fine turned grain on the faces. */
+  alloy: {
+    colA: [0.762, 0.776, 0.806], colB: [0.638, 0.650, 0.678],
+    scratchCol: [0.930, 0.942, 0.968],
+    roughBase: 0.30, roughVar: 0.055, metalBase: 0.99,
+    rust: 0.03, scratches: 0.42,
+    grain: 0.055, pitting: 0.22, spangle: false, paint: null, pal: ALU_OXIDE_PAL,
+  },
+  /* White-enamelled appliance sheet steel. Near-total paint coverage, so the
+   * metalness map reads ~0 everywhere except the handful of chips and the
+   * gouges that cut back to bare, lightly corroded steel. */
+  applianceSteel: {
+    colA: [0.636, 0.650, 0.672], colB: [0.518, 0.530, 0.552],
+    scratchCol: [0.848, 0.862, 0.886],
+    roughBase: 0.34, roughVar: 0.055, metalBase: 0.99,
+    rust: 0.08, scratches: 0.22,
+    grain: 0.04, pitting: 0.06, spangle: false,
+    paint: { rough: 0.31, coverage: 0.965, color: 'white' }, pal: RUST_PAL,
+  },
 };
 
 /* Industrial machine enamels, linear. `grey` is a genuine neutral
@@ -671,6 +692,79 @@ const PAINT_COLORS = {
   orange: { a: linRGB([206, 106, 26]), b: linRGB([160, 80, 20]) },
   green: { a: linRGB([56, 108, 74]), b: linRGB([38, 78, 54]) },
   blue: { a: linRGB([48, 86, 132]), b: linRGB([34, 62, 98]) },
+  /* Appliance enamel: an off-white that still has somewhere to go under a
+   * bright key light instead of clipping at paper white. */
+  white: { a: linRGB([232, 233, 229]), b: linRGB([203, 205, 202]) },
+};
+
+/* ------------------------------------------------------------------ *
+ * Dielectric (non-metal) palettes and presets
+ *
+ * These run a completely separate composition path from the metal
+ * presets: there is no rust model, no spangle, no paint film, and the
+ * metalness channel is flat zero (the PCB is the one exception — its
+ * exposed solder pads are genuinely metallic).
+ * ------------------------------------------------------------------ */
+
+const WOOD_PAL = {
+  early: linRGB([138, 96, 58]),
+  late: linRGB([62, 36, 19]),
+  pore: linRGB([32, 18, 10]),
+  sheen: linRGB([182, 140, 96]),
+};
+
+const PCB_PAL = {
+  mask: linRGB([16, 58, 32]),
+  maskHi: linRGB([38, 112, 62]),
+  overCopper: linRGB([28, 92, 48]),
+  solder: linRGB([178, 181, 186]),
+  epoxy: linRGB([26, 26, 28]),
+  silk: linRGB([224, 226, 220]),
+  hole: linRGB([22, 20, 17]),
+};
+
+const RUBBER_BLOOM = linRGB([74, 71, 66]);
+const FERRITE_FRESH = linRGB([104, 102, 106]);
+
+/**
+ * `kind`          selects the composition pass
+ * `base`          LINEAR albedo of the intact surface
+ * `roughBase`     roughness of the intact surface (absolute — the map is
+ *                 authored absolute and the scalar stays at 1.0)
+ * `microRes`      lattice for the pixel-scale detail layer; only the
+ *                 presets whose read depends on grain pay for 384.
+ */
+const DIELECTRIC_PRESETS = {
+  glass: {
+    kind: 'glass', base: [0.043, 0.050, 0.053],
+    roughBase: 0.055, scratches: 0.22,
+    normalStrength: 1.3, aoStrength: 0.5, microRes: 256,
+  },
+  abs: {
+    kind: 'plastic', base: [0.0172, 0.0174, 0.0190],
+    roughBase: 0.44, scratches: 0.30,
+    normalStrength: 3.2, aoStrength: 1.5, microRes: 384,
+  },
+  rubber: {
+    kind: 'rubber', base: [0.0118, 0.0118, 0.0124],
+    roughBase: 0.86, scratches: 0.45,
+    normalStrength: 2.8, aoStrength: 1.4, microRes: 384,
+  },
+  mdf: {
+    kind: 'wood', base: [0.090, 0.052, 0.027],
+    roughBase: 0.36, scratches: 0.20,
+    normalStrength: 2.2, aoStrength: 1.2, microRes: 256,
+  },
+  pcb: {
+    kind: 'pcb', base: [0.020, 0.070, 0.038],
+    roughBase: 0.30, scratches: 0.12,
+    normalStrength: 3.4, aoStrength: 1.7, microRes: 256,
+  },
+  ferrite: {
+    kind: 'ceramic', base: [0.0166, 0.0161, 0.0169],
+    roughBase: 0.56, scratches: 0.25,
+    normalStrength: 3.0, aoStrength: 1.6, microRes: 384,
+  },
 };
 
 /* Floor palette, linear.
@@ -1090,6 +1184,555 @@ function buildMetalMaps(preset, cfg) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Dielectric generation
+ *
+ * Shared skeleton: three band-limited noise layers, one fused
+ * composition pass per material kind, then the same height -> normal ->
+ * cavity-AO derivation the metal path uses.
+ * ------------------------------------------------------------------ */
+
+/** Max-blended, 1-texel-feathered disc into a 0..255 mask. */
+function stampDisc(dst, w, h, cx, cy, radius, value) {
+  const rad = Math.ceil(radius) + 1;
+  const ix = Math.round(cx);
+  const iy = Math.round(cy);
+  for (let oy = -rad; oy <= rad; oy++) {
+    const row = wrapi(iy + oy, h) * w;
+    for (let ox = -rad; ox <= rad; ox++) {
+      const d = Math.sqrt(ox * ox + oy * oy);
+      const f = clamp01(radius + 0.5 - d) * value;
+      if (f <= 0) continue;
+      const idx = row + wrapi(ix + ox, w);
+      if (dst[idx] < f) dst[idx] = f;
+    }
+  }
+}
+
+/** Max-blended constant-width segment (a copper trace run). */
+function stampSegment(dst, w, h, x0, y0, x1, y1, halfWidth, value) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const steps = Math.max(1, Math.ceil(Math.sqrt(dx * dx + dy * dy)));
+  const ux = dx / steps;
+  const uy = dy / steps;
+  for (let t = 0; t <= steps; t++) {
+    stampDisc(dst, w, h, x0 + ux * t, y0 + uy * t, halfWidth, value);
+  }
+}
+
+/** Max-blended filled axis-aligned rectangle. */
+function stampRect(dst, w, h, cx, cy, hx, hy, value) {
+  const y0 = Math.round(cy - hy);
+  const y1 = Math.round(cy + hy);
+  const x0 = Math.round(cx - hx);
+  const x1 = Math.round(cx + hx);
+  for (let y = y0; y <= y1; y++) {
+    const row = wrapi(y, h) * w;
+    for (let x = x0; x <= x1; x++) {
+      const idx = row + wrapi(x, w);
+      if (dst[idx] < value) dst[idx] = value;
+    }
+  }
+}
+
+/**
+ * Seeded circuit-board artwork: routed traces on a 16x16 grid with 45°
+ * dog-legs, through-hole vias, DIP/SOIC footprints with pad rows, a couple
+ * of electrolytic cans, and a silkscreen layer. All masks tile.
+ */
+function pcbLayout(size, seed) {
+  const rnd = mulberry32(hash2i(size, seed, 0x2c8b17));
+  const n = size * size;
+  const trace = new Uint8ClampedArray(n);
+  const pad = new Uint8ClampedArray(n);
+  const hole = new Uint8ClampedArray(n);
+  const silk = new Uint8ClampedArray(n);
+  const chip = new Uint8ClampedArray(n);
+
+  const cells = 16;
+  const pitch = size / cells;
+  const tw = Math.max(0.9, size / 460);        // trace half width, px
+
+  /* --- routed signal traces ------------------------------------------ */
+  const routes = 30;
+  for (let r = 0; r < routes; r++) {
+    let x = (Math.floor(rnd() * cells) + 0.5) * pitch;
+    let y = (Math.floor(rnd() * cells) + 0.5) * pitch;
+    const legs = 3 + ((rnd() * 4) | 0);
+    const wide = rnd() < 0.18 ? 2.2 : 1;       // occasional power rail
+    for (let l = 0; l < legs; l++) {
+      const ang = ((rnd() * 8) | 0) * Math.PI * 0.25;
+      const len = pitch * (1 + ((rnd() * 3) | 0));
+      const nx = x + Math.cos(ang) * len;
+      const ny = y + Math.sin(ang) * len;
+      stampSegment(trace, size, size, x, y, nx, ny, tw * wide, 255);
+      x = nx;
+      y = ny;
+    }
+    stampDisc(pad, size, size, x, y, tw * 2.7, 255);
+    stampDisc(hole, size, size, x, y, tw * 1.15, 255);
+  }
+
+  /* --- component footprints ------------------------------------------ */
+  const comps = 13;
+  for (let c = 0; c < comps; c++) {
+    const cx = (Math.floor(rnd() * cells) + 0.5) * pitch;
+    const cy = (Math.floor(rnd() * cells) + 0.5) * pitch;
+    const roll = rnd();
+
+    if (roll < 0.45) {
+      // DIP package: black epoxy body, two pad rows, silkscreen outline
+      const pins = 3 + ((rnd() * 4) | 0);
+      const step = pitch * 0.42;
+      const bw = step * 1.15;
+      const bh = step * (pins - 1) * 0.5 + step * 0.5;
+      stampRect(silk, size, size, cx, cy, bw * 1.5, bh * 1.12, 190);
+      stampRect(silk, size, size, cx, cy, bw * 1.5 - 1.6, bh * 1.12 - 1.6, 0);
+      stampRect(chip, size, size, cx, cy, bw, bh, 255);
+      for (let p = 0; p < pins; p++) {
+        const py = cy - bh + step * 0.5 + p * step;
+        for (const sx of [-1, 1]) {
+          stampRect(pad, size, size, cx + sx * bw * 1.45, py, tw * 1.9, tw * 1.0, 255);
+          stampSegment(trace, size, size, cx + sx * bw, py, cx + sx * bw * 1.45, py, tw, 255);
+        }
+      }
+    } else if (roll < 0.72) {
+      // electrolytic can: silkscreen circle marker + two through-hole pads
+      const r = pitch * 0.5;
+      for (let a = 0; a < 24; a++) {
+        const a0 = (a / 24) * Math.PI * 2;
+        const a1 = ((a + 1) / 24) * Math.PI * 2;
+        stampSegment(silk, size, size,
+          cx + Math.cos(a0) * r, cy + Math.sin(a0) * r,
+          cx + Math.cos(a1) * r, cy + Math.sin(a1) * r, 0.9, 190);
+      }
+      for (const sx of [-1, 1]) {
+        stampDisc(pad, size, size, cx + sx * pitch * 0.22, cy, tw * 3.0, 255);
+        stampDisc(hole, size, size, cx + sx * pitch * 0.22, cy, tw * 1.3, 255);
+      }
+    } else {
+      // SMD chip resistor / capacitor: two rectangular pads and a body
+      const w2 = pitch * 0.10;
+      stampRect(pad, size, size, cx - pitch * 0.16, cy, w2, w2 * 1.5, 255);
+      stampRect(pad, size, size, cx + pitch * 0.16, cy, w2, w2 * 1.5, 255);
+      stampRect(chip, size, size, cx, cy, pitch * 0.15, w2 * 1.35, 255);
+    }
+  }
+
+  return { trace, pad, hole, silk, chip };
+}
+
+function composeGlass(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const base = P.base;
+
+  // Dust film and finger smudges: without them a screen panel renders as a
+  // perfect analytic plane and reads as a hole in the frame. Kept subtle —
+  // the body has to stay a dark smoked panel, not a dirty window.
+  const smudgeCut = coverageCut(meso, 0.16, 0.40);
+  const dustCut = coverageCutFn(N, (i) => mottle[i] * 0.6 + micro[i] * 0.4, 0.09, 0.34);
+
+  const rnd = mulberry32(hash2i(size, seed, 0x91a557));
+  const scratch = new Float32Array(N);
+  stampScratches(scratch, size, size, {
+    rnd, count: Math.round(size * 0.10 * P.scratches) + 8, angle: 0.55, jitter: Math.PI,
+    minLen: size * 0.02, maxLen: size * 0.17,
+    halfWidth: 0.7, intensity: 0.45, wobble: size / 900,
+  });
+
+  for (let i = 0; i < N; i++) {
+    const mi = micro[i];
+    const sc = scratch[i];
+    const smudge = smoothstep(smudgeCut.t0, smudgeCut.t1, meso[i]);
+    const dust = smoothstep(dustCut.t0, dustCut.t1, mottle[i] * 0.6 + mi * 0.4);
+
+    // Everything that touches float glass *adds* scatter; nothing darkens it.
+    const lift = 1 + smudge * 0.14 + dust * 0.30 + sc * 0.9;
+    const r = base[0] * lift;
+    const g = base[1] * lift;
+    const b = base[2] * lift;
+
+    const ro = P.roughBase + (mi - 0.5) * 0.014 + smudge * 0.09 + dust * 0.21 + sc * 0.20;
+    const hh = 0.5 + smudge * 0.003 + dust * 0.005 - sc * 0.012;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.03, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function composePlastic(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const base = P.base;
+
+  // Moulded pebble/leather grain — the defining read of a black ABS bezel.
+  const GR = Math.min(size, 256);
+  const wl = worleyLayer(GR, GR, { cells: 44, seed: seed * 53 + 7, jitter: 1.0 });
+  const f1 = resampleWrap(wl.f1, GR, GR, size, size);
+  const f2 = resampleWrap(wl.f2, GR, GR, size, size);
+  const cid = resampleNearest(wl.id, GR, GR, size, size);
+
+  const rnd = mulberry32(hash2i(size, seed, 0x4b2c19));
+  const scuff = new Float32Array(N);
+  stampScratches(scuff, size, size, {
+    rnd, count: Math.round(size * 0.22 * P.scratches) + 14, angle: 0.3, jitter: Math.PI,
+    minLen: size * 0.02, maxLen: size * 0.22,
+    halfWidth: 0.85, intensity: 0.6, wobble: size / 520,
+  });
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+    const sc = scuff[i];
+
+    const dome = 1 - smoothstep(0.10, 0.58, f1[i]);
+    const valley = 1 - smoothstep(0.0, 0.07, f2[i] - f1[i]);
+    const facet = 0.86 + cid[i] * 0.30;
+
+    // Deep black plastic: the only luminance information is the grain
+    // shading and the polished scuffs, so both are pushed hard.
+    const shade = facet * (1 - valley * 0.42) * (0.94 + dome * 0.16) * (1 + (mi - 0.5) * 0.10);
+    let r = base[0] * shade;
+    let g = base[1] * shade;
+    let b = base[2] * shade;
+    // Rubbed edges polish up and pick up a light grey haze.
+    r = lerp(r, 0.052, sc * 0.55);
+    g = lerp(g, 0.053, sc * 0.55);
+    b = lerp(b, 0.056, sc * 0.55);
+
+    const ro = P.roughBase - dome * 0.07 + valley * 0.20
+      + (me - 0.5) * 0.07 + (mi - 0.5) * 0.05 - sc * 0.16 + (mo - 0.5) * 0.04;
+    const hh = 0.5 + dome * 0.022 - valley * 0.030 + (mi - 0.5) * 0.006 - sc * 0.006;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.10, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function composeRubber(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const base = P.base;
+
+  // Mould flow lines run around the casing; a fine granular carbon-black
+  // surface sits on top of them.
+  const GW = Math.max(32, size >> 3);
+  const flow = resampleWrap(
+    fbmLayer(GW, size, { freqX: 2, freqY: 9, octaves: 3, gain: 0.5, seed: seed * 61 + 13 }),
+    GW, size, size, size,
+  );
+  const nickCut = coverageCutFn(N, (i) => micro[i] * 0.7 + meso[i] * 0.3, 0.035, 0.10);
+  const bloomCut = coverageCut(mottle, 0.28, 0.45);
+
+  const rnd = mulberry32(hash2i(size, seed, 0x77ba31));
+  const scuff = new Float32Array(N);
+  stampScratches(scuff, size, size, {
+    rnd, count: Math.round(size * 0.18 * P.scratches) + 10, angle: 0.1, jitter: Math.PI,
+    minLen: size * 0.03, maxLen: size * 0.26,
+    halfWidth: 1.1, intensity: 0.5, wobble: size / 380,
+  });
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+    const fl = flow[i];
+    const sc = scuff[i];
+
+    const nick = smoothstep(nickCut.t0, nickCut.t1, mi * 0.7 + me * 0.3);
+    // Antiozonant bloom: the grey-brown dusty film old rubber wears.
+    const bloom = smoothstep(bloomCut.t0, bloomCut.t1, mo) * (0.35 + 0.65 * me);
+
+    const shade = (0.90 + (mi - 0.5) * 0.30) * (1 + (fl - 0.5) * 0.12);
+    let r = base[0] * shade;
+    let g = base[1] * shade;
+    let b = base[2] * shade;
+    r = lerp(r, RUBBER_BLOOM[0], bloom * 0.30);
+    g = lerp(g, RUBBER_BLOOM[1], bloom * 0.30);
+    b = lerp(b, RUBBER_BLOOM[2], bloom * 0.30);
+    // Scuffed rubber burnishes to a slight sheen and lightens a touch.
+    r = lerp(r, 0.030, sc * 0.40);
+    g = lerp(g, 0.030, sc * 0.40);
+    b = lerp(b, 0.031, sc * 0.40);
+
+    const ro = P.roughBase + (mi - 0.5) * 0.09 + (me - 0.5) * 0.05
+      + bloom * 0.06 + nick * 0.05 - sc * 0.20;
+    const hh = 0.5 + (mi - 0.5) * 0.020 + (fl - 0.5) * 0.014 - nick * 0.035 - sc * 0.004;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.35, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function composeWood(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+
+  // Veneer: fast variation across the grain, slow along it, so the iso-lines
+  // run as long streaks. The warped ridged layer supplies cathedral figure.
+  const GW = Math.max(32, size >> 3);
+  const MID = Math.min(size, 256);
+  const grain = resampleWrap(
+    fbmLayer(GW, size, { freqX: 3, freqY: 24, octaves: 4, gain: 0.55, seed: seed * 17 + 5 }),
+    GW, size, size, size,
+  );
+  const bands = resampleWrap(
+    fbmLayer(GW, size, { freqX: 2, freqY: 11, octaves: 3, gain: 0.5, ridged: true, seed: seed * 43 + 29, warp: 0.05, warpFreq: 3 }),
+    GW, size, size, size,
+  );
+  const pores = resampleWrap(
+    fbmLayer(MID, size, { freqX: 26, freqY: 90, octaves: 2, gain: 0.5, seed: seed * 71 + 37 }),
+    MID, size, size, size,
+  );
+  const poreCut = coverageCut(pores, 0.10, 0.22);
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const gr = grain[i];
+    const bd = bands[i];
+    const pore = smoothstep(poreCut.t0, poreCut.t1, pores[i]) * (0.3 + 0.7 * bd);
+
+    // Latewood is the dark line; earlywood the open tan field.
+    const late = clamp01(bd * 0.75 + (gr - 0.5) * 0.85 + 0.14);
+    let r = lerp(WOOD_PAL.early[0], WOOD_PAL.late[0], late);
+    let g = lerp(WOOD_PAL.early[1], WOOD_PAL.late[1], late);
+    let b = lerp(WOOD_PAL.early[2], WOOD_PAL.late[2], late);
+
+    // Chatoyance: the flecked sheen that makes veneer read as veneer.
+    const sheen = smoothstep(0.62, 0.95, gr) * (0.35 + 0.65 * mo);
+    r = lerp(r, WOOD_PAL.sheen[0], sheen * 0.28);
+    g = lerp(g, WOOD_PAL.sheen[1], sheen * 0.28);
+    b = lerp(b, WOOD_PAL.sheen[2], sheen * 0.28);
+
+    r = lerp(r, WOOD_PAL.pore[0], pore * 0.8);
+    g = lerp(g, WOOD_PAL.pore[1], pore * 0.8);
+    b = lerp(b, WOOD_PAL.pore[2], pore * 0.8);
+
+    const tone = 0.94 + (mo - 0.5) * 0.18 + (me - 0.5) * 0.08;
+    r *= tone; g *= tone; b *= tone;
+
+    // Satin lacquer: fairly even, opening up slightly in the pores.
+    const ro = P.roughBase + pore * 0.26 + late * 0.05 + (me - 0.5) * 0.06 - sheen * 0.05;
+    const hh = 0.5 - pore * 0.035 - late * 0.008 + (gr - 0.5) * 0.006;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.14, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function composePCB(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const art = pcbLayout(size, seed);
+  // Copper pour: broad regions where the mask sits over a ground plane and
+  // reads a shade warmer than bare laminate.
+  const pourCut = coverageCut(mottle, 0.42, 0.10);
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+
+    const trace = art.trace[i] / 255;
+    const padM = art.pad[i] / 255;
+    const holeM = art.hole[i] / 255;
+    const silkM = art.silk[i] / 255;
+    const chipM = art.chip[i] / 255;
+    const pour = smoothstep(pourCut.t0, pourCut.t1, mo);
+
+    // 1. solder mask over laminate, tinted by whatever copper is under it
+    const weave = 0.94 + (mi - 0.5) * 0.14 + (me - 0.5) * 0.06;
+    let r = lerp(PCB_PAL.mask[0], PCB_PAL.overCopper[0], pour * 0.75) * weave;
+    let g = lerp(PCB_PAL.mask[1], PCB_PAL.overCopper[1], pour * 0.75) * weave;
+    let b = lerp(PCB_PAL.mask[2], PCB_PAL.overCopper[2], pour * 0.75) * weave;
+    let ro = P.roughBase + (mi - 0.5) * 0.10 + pour * 0.02;
+    let mt = 0;
+    let hh = 0.5 + (mi - 0.5) * 0.004;
+
+    // 2. routed traces: raised ridges, mask stretched thin over the copper
+    if (trace > 0.01) {
+      r = lerp(r, PCB_PAL.maskHi[0], trace * 0.85);
+      g = lerp(g, PCB_PAL.maskHi[1], trace * 0.85);
+      b = lerp(b, PCB_PAL.maskHi[2], trace * 0.85);
+      ro = lerp(ro, 0.26, trace * 0.7);
+      hh += trace * 0.020;
+    }
+
+    // 3. epoxy component bodies
+    if (chipM > 0.01) {
+      r = lerp(r, PCB_PAL.epoxy[0], chipM);
+      g = lerp(g, PCB_PAL.epoxy[1], chipM);
+      b = lerp(b, PCB_PAL.epoxy[2], chipM);
+      ro = lerp(ro, 0.42 + (mi - 0.5) * 0.08, chipM);
+      hh += chipM * 0.055;
+    }
+
+    // 4. silkscreen legend (matte white ink, barely any relief)
+    if (silkM > 0.01) {
+      r = lerp(r, PCB_PAL.silk[0], silkM * 0.9);
+      g = lerp(g, PCB_PAL.silk[1], silkM * 0.9);
+      b = lerp(b, PCB_PAL.silk[2], silkM * 0.9);
+      ro = lerp(ro, 0.72, silkM * 0.9);
+      hh += silkM * 0.003;
+    }
+
+    // 5. tinned pads: the one genuinely metallic thing on the board
+    if (padM > 0.01) {
+      const dome = padM * (0.85 + 0.3 * me);
+      r = lerp(r, PCB_PAL.solder[0], padM);
+      g = lerp(g, PCB_PAL.solder[1], padM);
+      b = lerp(b, PCB_PAL.solder[2], padM);
+      ro = lerp(ro, 0.24 + (mi - 0.5) * 0.12, padM);
+      mt = padM;
+      hh += dome * 0.026;
+    }
+
+    // 6. drill holes punch straight back through everything
+    if (holeM > 0.01) {
+      r = lerp(r, PCB_PAL.hole[0], holeM);
+      g = lerp(g, PCB_PAL.hole[1], holeM);
+      b = lerp(b, PCB_PAL.hole[2], holeM);
+      ro = lerp(ro, 0.85, holeM);
+      mt *= 1 - holeM;
+      hh -= holeM * 0.075;
+    }
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.10, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    const mv = clamp01(mt) * 255;
+    metal[o] = mv; metal[o + 1] = mv; metal[o + 2] = mv; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function composeCeramic(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const base = P.base;
+
+  // Sintered ferrite: closed porosity everywhere, plus the chipped corners
+  // every ceramic magnet in a scrapyard has, showing lighter fresh fracture.
+  // The chip field is meso/micro driven so the breaks stay small and angular
+  // rather than spreading into soft continental blobs.
+  const poreCut = coverageCutFn(N, (i) => micro[i] * 0.75 + meso[i] * 0.25, 0.16, 0.16);
+  const chipCut = coverageCutFn(N, (i) => meso[i] * 0.55 + micro[i] * 0.45, 0.06, 0.04);
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+    const pore = smoothstep(poreCut.t0, poreCut.t1, mi * 0.75 + me * 0.25);
+    const chip = smoothstep(chipCut.t0, chipCut.t1, me * 0.55 + mi * 0.45)
+      * (0.45 + 0.55 * smoothstep(0.35, 0.75, mo));
+
+    const shade = (0.88 + (mi - 0.5) * 0.34) * (1 - pore * 0.45);
+    let r = base[0] * shade;
+    let g = base[1] * shade;
+    let b = base[2] * shade;
+    // Fresh fracture is a much lighter, chalkier grey than the fired skin.
+    r = lerp(r, FERRITE_FRESH[0] * 0.55, chip * 0.75);
+    g = lerp(g, FERRITE_FRESH[1] * 0.55, chip * 0.75);
+    b = lerp(b, FERRITE_FRESH[2] * 0.55, chip * 0.75);
+
+    const ro = P.roughBase + pore * 0.28 + chip * 0.16 + (me - 0.5) * 0.07;
+    const hh = 0.5 - pore * 0.030 + chip * 0.014 + (mi - 0.5) * 0.008;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.20, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+function buildSurfaceMaps(preset, cfg) {
+  const P = DIELECTRIC_PRESETS[preset];
+  const size = cfg.size;
+  const seed = cfg.seed;
+  const N = size * size;
+
+  const LO = Math.min(size, 128);
+  const MID = Math.min(size, 256);
+  const HI = Math.min(size, P.microRes);
+
+  const mottle = resampleWrap(
+    fbmLayer(LO, LO, { freqX: 3, freqY: 3, octaves: 4, seed: seed * 3 + 11, warp: 0.08, warpFreq: 2 }),
+    LO, LO, size, size,
+  );
+  const meso = resampleWrap(
+    fbmLayer(MID, MID, { freqX: 12, freqY: 12, octaves: 4, seed: seed * 7 + 23 }),
+    MID, MID, size, size,
+  );
+  const micro = resampleWrap(
+    fbmLayer(HI, HI, { freqX: 44, freqY: 44, octaves: 3, gain: 0.55, seed: seed * 13 + 41 }),
+    HI, HI, size, size,
+  );
+
+  const ctx = {
+    P, size, seed, N, mottle, meso, micro,
+    color: new Uint8ClampedArray(N * 4),
+    rough: new Uint8ClampedArray(N * 4),
+    metal: new Uint8ClampedArray(N * 4),
+    height: new Float32Array(N),
+  };
+
+  switch (P.kind) {
+    case 'plastic': composePlastic(ctx); break;
+    case 'rubber': composeRubber(ctx); break;
+    case 'wood': composeWood(ctx); break;
+    case 'pcb': composePCB(ctx); break;
+    case 'ceramic': composeCeramic(ctx); break;
+    default: composeGlass(ctx); break;
+  }
+
+  const normal = heightToNormalData(ctx.height, size, size, P.normalStrength);
+  const aoF = heightToAO(ctx.height, size, size, P.aoStrength);
+  const ao = grayToRGBA(aoF, N);
+
+  return { color: ctx.color, normal, rough: ctx.rough, metal: ctx.metal, ao };
+}
+
+/* ------------------------------------------------------------------ *
  * Floor generation
  * ------------------------------------------------------------------ */
 
@@ -1413,14 +2056,19 @@ function buildFloorMaps(cfg) {
  * ------------------------------------------------------------------ */
 
 /**
- * Build a cached, seamlessly tiling PBR texture set for a metal preset.
+ * Build a cached, seamlessly tiling PBR texture set for a surface preset.
  *
  * Sets are memoised on `preset + JSON.stringify(options)`, so calling this
  * repeatedly (per shred fragment, per frame, ...) never re-allocates GPU
  * memory. Calling `dispose()` on the returned set frees the textures and
  * evicts the cache entry.
  *
- * @param {'steel'|'aluminum'|'castIron'|'galvanized'|'copper'|'paintedSteel'|'rustedSteel'} preset
+ * Metal presets run the corrosion/paint/spangle pipeline; the dielectric
+ * presets (`glass`, `abs`, `rubber`, `mdf`, `pcb`, `ferrite`) run their own
+ * composition pass and return a flat-zero metalness map — except `pcb`,
+ * whose tinned pads are genuinely metallic.
+ *
+ * @param {'steel'|'aluminum'|'castIron'|'galvanized'|'copper'|'paintedSteel'|'rustedSteel'|'alloy'|'applianceSteel'|'glass'|'abs'|'rubber'|'mdf'|'pcb'|'ferrite'} preset
  * @param {object} [options]
  * @param {number} [options.size=1024] Square texture resolution.
  * @param {number} [options.seed=1] PRNG seed; changes every feature layout.
@@ -1428,8 +2076,8 @@ function buildFloorMaps(cfg) {
  * @param {number} [options.rust] Rust coverage 0..1 (defaults per preset).
  * @param {number} [options.scratches] Scratch density 0..1 (defaults per preset).
  * @param {boolean} [options.anisotropic=true] Directional brushed grain + parallel scratches.
- * @param {'yellow'|'grey'|'orange'|'green'|'blue'} [options.paintColor='yellow'] `paintedSteel` only.
- * @param {number} [options.paintCoverage=0.62] Remaining paint fraction, `paintedSteel` only.
+ * @param {'yellow'|'grey'|'orange'|'green'|'blue'|'white'} [options.paintColor] Painted presets only.
+ * @param {number} [options.paintCoverage] Remaining paint fraction, painted presets only.
  * @returns {{map: THREE.CanvasTexture, normalMap: THREE.CanvasTexture, roughnessMap: THREE.CanvasTexture, metalnessMap: THREE.CanvasTexture, aoMap: THREE.CanvasTexture, dispose: () => void}}
  */
 export function createMetalTextureSet(preset, options = {}) {
@@ -1437,15 +2085,26 @@ export function createMetalTextureSet(preset, options = {}) {
   const cached = textureCache.get(key);
   if (cached) return cached;
 
+  const size = options.size !== undefined ? options.size : 1024;
+  const seed = options.seed !== undefined ? options.seed : 1;
+  const repeat = options.repeat !== undefined ? options.repeat : [1, 1];
+
+  if (DIELECTRIC_PRESETS[preset]) {
+    const parts = buildSurfaceMaps(preset, { size, seed, repeat });
+    return cacheSet(key, makeSet(parts, repeat, size));
+  }
+
   const P = PRESETS[preset] || PRESETS.steel;
   const cfg = {
-    size: options.size !== undefined ? options.size : 1024,
-    seed: options.seed !== undefined ? options.seed : 1,
-    repeat: options.repeat !== undefined ? options.repeat : [1, 1],
+    size,
+    seed,
+    repeat,
     rust: clamp01(options.rust !== undefined ? options.rust : P.rust),
     scratches: clamp01(options.scratches !== undefined ? options.scratches : P.scratches),
     anisotropic: options.anisotropic !== undefined ? options.anisotropic : true,
-    paintColor: options.paintColor !== undefined ? options.paintColor : 'yellow',
+    paintColor: options.paintColor !== undefined
+      ? options.paintColor
+      : (P.paint && P.paint.color ? P.paint.color : 'yellow'),
     paintCoverage: options.paintCoverage !== undefined
       ? options.paintCoverage
       : (P.paint ? P.paint.coverage : 0),

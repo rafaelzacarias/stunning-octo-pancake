@@ -65,6 +65,18 @@ function fmtMass(mass) {
   return (mass % 1 === 0 ? mass.toFixed(0) : mass.toFixed(1)) + ' kg';
 }
 
+/**
+ * Placeholder monogram for a feed-stock card whose 3D thumbnail never arrives.
+ * "Aluminium Can" → "AC"; single words collapse to their first two letters.
+ */
+function monogram(label, id) {
+  const source = String(label ?? '').trim() || String(id ?? '').trim();
+  const words = source.split(/[\s_\-/·]+/).filter(Boolean);
+  if (!words.length) return '??';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
 /* ------------------------------------------------------------------ *
  * Gauge geometry (inline SVG, authored here so the CSS can hook onto it)
  * ------------------------------------------------------------------ */
@@ -137,11 +149,20 @@ function gaugeMarkup() {
 </svg>`;
 }
 
-const ICON_AUDIO = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+const ICON_AUDIO_ON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
   <path class="sio-ico-stroke" d="M4 9.5h3.6L12.5 5.4v13.2L7.6 14.5H4z"/>
   <path class="sio-ico-wave sio-ico-wave-1" d="M15.8 9.2a4 4 0 0 1 0 5.6"/>
   <path class="sio-ico-wave sio-ico-wave-2" d="M18.4 6.6a7.6 7.6 0 0 1 0 10.8"/>
-  <path class="sio-ico-mute" d="M16.4 9.6l5 4.8M21.4 9.6l-5 4.8"/>
+</svg>`;
+
+const ICON_AUDIO_MUTED = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path class="sio-ico-stroke" d="M4 9.5h3.6L12.5 5.4v13.2L7.6 14.5H4z"/>
+  <path class="sio-ico-mute" d="M16.2 9.4l5.4 5.2M21.6 9.4l-5.4 5.2"/>
+</svg>`;
+
+const ICON_CUBE = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path class="sio-ico-stroke" d="M12 3.2l7.4 4.2v9.2L12 20.8 4.6 16.6V7.4z"/>
+  <path class="sio-ico-stroke" d="M4.6 7.4L12 11.6l7.4-4.2M12 11.6v9.2"/>
 </svg>`;
 
 const ICON_CHEVRON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -218,7 +239,9 @@ export class ControlPanel {
     /* ---- state ---- */
     this.power = false;
     this.reverse = false;
-    this.audio = true;
+    /* Audio boots MUTED: nothing may make a sound until the user asks for it.
+       The button reflects this at build time WITHOUT emitting onAudioToggle. */
+    this.audio = false;
     this.uiHidden = false;
     this.helpOpen = true;
     this.disposed = false;
@@ -249,6 +272,7 @@ export class ControlPanel {
     this._noticeTimer = 0;
     this._cameraButtons = new Map();
     this._settingInputs = new Map();
+    this._thumbs = new Map();
     this._loading = null;
     this._gate = null;
 
@@ -327,6 +351,37 @@ export class ControlPanel {
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
+  }
+
+  /**
+   * Attach a rendered preview to a feed-stock card. Idempotent and total:
+   * unknown ids, empty values, calls before the cards exist and calls after
+   * dispose() are all no-ops that leave the placeholder monogram in place.
+   *
+   * @param   {string} id       feed-stock id (as passed in config.objectTypes)
+   * @param   {string} dataUrl  `data:image/…` (or blob:) URL — local sources only
+   * @returns {boolean} true when the card now points at this image
+   */
+  setThumbnail(id, dataUrl) {
+    if (this.disposed || !this._thumbs) return false;
+    const entry = this._thumbs.get(String(id));
+    if (!entry) return false;
+
+    const url = typeof dataUrl === 'string' ? dataUrl.trim() : '';
+    /* The UI never issues network requests: only in-document sources allowed. */
+    if (!/^(?:data:image\/|blob:)/i.test(url)) {
+      if (entry.url !== null) {
+        entry.url = null;
+        entry.img.removeAttribute('src');
+      }
+      entry.well.classList.remove('is-ready');
+      return false;
+    }
+
+    if (entry.url === url) return true; // already showing it — no reflow, no flash
+    entry.url = url;
+    entry.img.src = url; // the build-time 'load' listener cross-fades it in
+    return true;
   }
 
   setNotice(text, ms = 2200) {
@@ -443,6 +498,7 @@ export class ControlPanel {
 
     this._cameraButtons.clear();
     this._settingInputs.clear();
+    this._thumbs.clear();
 
     if (this.root && this.root.parentNode) this.root.remove();
     this.root = null;
@@ -548,27 +604,21 @@ export class ControlPanel {
       el('div', { class: 'sio-select-wrap' }, [select, el('span', { class: 'sio-select-arrow', html: ICON_CHEVRON })]),
     ]));
 
-    /* Audio */
+    /* Audio — starts MUTED (see constructor). No callback fires on build. */
     const audioBtn = el('button', {
-      class: 'sio-btn sio-btn--audio is-on',
+      class: 'sio-btn sio-btn--audio',
       type: 'button',
-      'aria-pressed': 'true',
+      'aria-pressed': 'false',
       title: 'Toggle audio',
     }, [
-      el('span', { class: 'sio-btn-ico', html: ICON_AUDIO }),
+      el('span', { class: 'sio-btn-ico', html: ICON_AUDIO_MUTED }),
       el('span', { class: 'sio-btn-label', text: 'AUDIO ENGINE' }),
-      el('span', { class: 'sio-btn-state', text: 'ON' }),
+      el('span', { class: 'sio-btn-state', text: 'MUTED' }),
     ]);
-    this._on(audioBtn, 'click', () => {
-      this.audio = !this.audio;
-      audioBtn.classList.toggle('is-on', this.audio);
-      audioBtn.setAttribute('aria-pressed', this.audio ? 'true' : 'false');
-      audioBtn.querySelector('.sio-btn-state').textContent = this.audio ? 'ON' : 'MUTED';
-      this.els.volume.wrap.classList.toggle('is-disabled', !this.audio);
-      this.els.volume.input.disabled = !this.audio;
-      this._emit('onAudioToggle', this.audio);
-    });
+    this._on(audioBtn, 'click', () => this._applyAudio(!this.audio, true));
     this.els.audioBtn = audioBtn;
+    this.els.audioIco = audioBtn.querySelector('.sio-btn-ico');
+    this.els.audioState = audioBtn.querySelector('.sio-btn-state');
 
     const volume = this._slider({
       id: 'sio-volume',
@@ -578,6 +628,9 @@ export class ControlPanel {
       onInput: (v) => this._emit('onVolume', v),
     });
     this.els.volume = volume;
+    /* Match exactly what the click handler does when toggling audio off. */
+    volume.wrap.classList.add('is-disabled');
+    volume.input.disabled = true;
 
     panel.body.appendChild(el('div', { class: 'sio-group sio-group--audio' }, [audioBtn, volume.wrap]));
 
@@ -625,19 +678,52 @@ export class ControlPanel {
     const panel = this._panel('sio-panel--feed', 'FEED STOCK', 'CLICK TO DROP');
     const list = el('div', { class: 'sio-cards' });
 
-    this.config.objectTypes.forEach((type, index) => {
+    this.config.objectTypes.forEach((type) => {
       const id = String(type.id);
-      const keyLabel = index < 9 ? String(index + 1) : '·';
+      const label = String(type.label ?? id);
       const mass = fmtMass(Number(type.mass));
+      /* Only the first ten items carry a keyboard binding. Anything without a
+         `key` simply gets no badge — never a blank box or an invented number. */
+      const keyLabel = type.key === undefined || type.key === null || type.key === ''
+        ? null
+        : String(type.key);
+
+      const img = el('img', {
+        class: 'sio-thumb-img',
+        alt: '',
+        decoding: 'async',
+        draggable: false,
+      });
+      const well = el('span', { class: 'sio-thumb', 'aria-hidden': 'true' }, [
+        el('span', { class: 'sio-thumb-ph' }, [
+          el('span', { class: 'sio-thumb-glyph', html: ICON_CUBE }),
+          el('span', { class: 'sio-thumb-mono', text: monogram(label, id) }),
+        ]),
+        el('span', { class: 'sio-thumb-shimmer' }),
+        img,
+        el('span', { class: 'sio-thumb-vignette' }),
+        keyLabel ? el('span', { class: 'sio-card-key', text: keyLabel }) : null,
+      ]);
+
+      /* Registered once, at build time, so setThumbnail() stays side-effect
+         free and dispose() still tears every listener down. */
+      this._on(img, 'load', () => well.classList.add('is-ready'));
+      this._on(img, 'error', () => {
+        const entry = this._thumbs.get(id);
+        if (entry) entry.url = null;
+        well.classList.remove('is-ready');
+        img.removeAttribute('src');
+      });
+      this._thumbs.set(id, { well, img, url: null });
 
       const main = el('button', {
         class: 'sio-card-main',
         type: 'button',
-        title: `Spawn ${type.label ?? id}`,
+        title: `Spawn ${label}`,
       }, [
-        el('span', { class: 'sio-card-key', text: keyLabel }),
+        well,
         el('span', { class: 'sio-card-text' }, [
-          el('span', { class: 'sio-card-label', text: String(type.label ?? id) }),
+          el('span', { class: 'sio-card-label', text: label }),
           type.hint ? el('span', { class: 'sio-card-hint', text: String(type.hint) }) : null,
         ]),
         mass ? el('span', { class: 'sio-card-mass', text: mass }) : null,
@@ -647,8 +733,8 @@ export class ControlPanel {
       const burst = el('button', {
         class: 'sio-card-burst',
         type: 'button',
-        title: `Spawn 5 × ${type.label ?? id}`,
-        'aria-label': `Spawn five ${type.label ?? id}`,
+        title: `Spawn 5 × ${label}`,
+        'aria-label': `Spawn five ${label}`,
         text: '×5',
       });
       this._on(burst, 'click', (e) => {
@@ -957,6 +1043,19 @@ export class ControlPanel {
     this.els.help.classList.toggle('is-hidden', !visible);
     const input = this._settingInputs.get('showHelp');
     if (input && input.checked !== visible) input.checked = visible;
+  }
+
+  _applyAudio(on, emit) {
+    if (this.disposed) return;
+    this.audio = !!on;
+    const btn = this.els.audioBtn;
+    btn.classList.toggle('is-on', this.audio);
+    btn.setAttribute('aria-pressed', this.audio ? 'true' : 'false');
+    this.els.audioState.textContent = this.audio ? 'ON' : 'MUTED';
+    this.els.audioIco.innerHTML = this.audio ? ICON_AUDIO_ON : ICON_AUDIO_MUTED;
+    this.els.volume.wrap.classList.toggle('is-disabled', !this.audio);
+    this.els.volume.input.disabled = !this.audio;
+    if (emit) this._emit('onAudioToggle', this.audio);
   }
 
   /* ================================================================ *

@@ -22,7 +22,7 @@ export class AudioEngine {
 		this.ctx = null;
 		this._started = false;
 		this._disposed = false;
-		this._muted = false;
+		this._muted = true;
 		this._masterVolume = 0.85;
 
 		// ---- continuous control state (targets vs smoothed values) ----

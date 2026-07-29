@@ -41,6 +41,10 @@ let loopHandle = null;
 
 const bodies = new Map(); // id -> { rb, colliders:[], density, kind }
 const colliderInfo = new Map(); // colliderHandle -> { bodyId, cutter, planeX, shaft }
+/** bodyId -> ImpulseJoint[] welding it to the rest of its assembly. */
+const bodyJoints = new Map();
+let weldCount = 0;
+let weldFailures = 0;
 
 const bufferPool = [];
 const contactPool = [];
@@ -299,9 +303,109 @@ function addBody(msg) {
 function removeBody(id) {
   const rec = bodies.get(id);
   if (!rec) return;
+  breakJoints(id);
   for (const c of rec.colliders) colliderInfo.delete(c.handle);
   world.removeRigidBody(rec.rb);
   bodies.delete(id);
+}
+
+/* ------------------------------------------------- compound assemblies */
+
+function qConj(q) { return { x: -q.x, y: -q.y, z: -q.z, w: q.w }; }
+
+function qMul(a, b) {
+  return {
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  };
+}
+
+function qRotate(q, v) {
+  const ix = q.w * v.x + q.y * v.z - q.z * v.y;
+  const iy = q.w * v.y + q.z * v.x - q.x * v.z;
+  const iz = q.w * v.z + q.x * v.y - q.y * v.x;
+  const iw = -q.x * v.x - q.y * v.y - q.z * v.z;
+  return {
+    x: ix * q.w + iw * -q.x + iy * -q.z - iz * -q.y,
+    y: iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z,
+    z: iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x,
+  };
+}
+
+/**
+ * Weld two bodies in their current relative pose with a fixed joint.
+ * Anchors are placed at the world midpoint between the two centres, expressed
+ * in each body's local frame, and frame2 carries the relative rotation so the
+ * pair is locked exactly as spawned.
+ */
+function weld(rbA, rbB) {
+  const pa = rbA.translation(), qa = rbA.rotation();
+  const pb = rbB.translation(), qb = rbB.rotation();
+  const mid = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2, z: (pa.z + pb.z) / 2 };
+
+  const a1 = qRotate(qConj(qa), { x: mid.x - pa.x, y: mid.y - pa.y, z: mid.z - pa.z });
+  const a2 = qRotate(qConj(qb), { x: mid.x - pb.x, y: mid.y - pb.y, z: mid.z - pb.z });
+  const f1 = { x: 0, y: 0, z: 0, w: 1 };
+  const f2 = qMul(qConj(qb), qa);
+
+  const params = RAPIER.JointData.fixed(a1, f1, a2, f2);
+  const joint = world.createImpulseJoint(params, rbA, rbB, true);
+  // Sibling parts sit flush against each other; letting them also generate
+  // contacts makes the joint fight the contact solver and the whole assembly
+  // buzzes.
+  joint.setContactsEnabled?.(false);
+  return joint;
+}
+
+function registerJoint(id, joint) {
+  let list = bodyJoints.get(id);
+  if (!list) { list = []; bodyJoints.set(id, list); }
+  list.push(joint);
+}
+
+/** Sever every weld touching this body. Safe to call repeatedly. */
+function breakJoints(id) {
+  const list = bodyJoints.get(id);
+  if (!list) return;
+  for (const joint of list) {
+    try { world.removeImpulseJoint(joint, true); weldCount--; } catch (e) { /* already gone */ }
+    // Drop the same joint from whichever sibling also referenced it.
+    for (const [otherId, otherList] of bodyJoints) {
+      if (otherId === id) continue;
+      const i = otherList.indexOf(joint);
+      if (i >= 0) otherList.splice(i, 1);
+    }
+  }
+  bodyJoints.delete(id);
+}
+
+/**
+ * Spawn a multi-part object as separate rigid bodies welded into one rigid
+ * assembly. Star topology from the heaviest part, so severing one part never
+ * silently detaches unrelated siblings.
+ */
+function addAssembly(msg) {
+  const created = [];
+  for (const part of msg.parts) {
+    addBody(part);
+    if (bodies.has(part.id)) created.push(part.id);
+  }
+  if (created.length < 2) return;
+
+  const baseId = created[0];
+  const base = bodies.get(baseId);
+  for (let i = 1; i < created.length; i++) {
+    const rec = bodies.get(created[i]);
+    if (!rec) continue;
+    let joint;
+    try { joint = weld(base.rb, rec.rb); } catch (e) { weldFailures++; continue; }
+    if (!joint) { weldFailures++; continue; }
+    weldCount++;
+    registerJoint(baseId, joint);
+    registerJoint(created[i], joint);
+  }
 }
 
 /* -------------------------------------------------------------------- step */
@@ -490,6 +594,8 @@ function publish() {
     rpm: shredder.currentRpm,
     load: shredder.loadSmooth,
     bodies: bodies.size,
+    welds: weldCount,
+    weldFailures,
     stepMs: stepMsSmooth,
   }, transfer);
   contactBuf = null;
@@ -530,6 +636,8 @@ self.onmessage = (e) => {
     case 'buildShredder': buildShredder(msg); break;
     case 'addBody': addBody(msg); break;
     case 'addBodies': for (const b of msg.items) addBody(b); break;
+    case 'addAssembly': addAssembly(msg); break;
+    case 'breakJoints': for (const id of msg.ids) breakJoints(id); break;
     case 'removeBody': removeBody(msg.id); break;
     case 'removeBodies': for (const id of msg.ids) removeBody(id); break;
     case 'setShredder':
@@ -559,6 +667,7 @@ self.onmessage = (e) => {
       const ids = [];
       for (const [id, rec] of bodies) if (rec.kind === 'dynamic') ids.push(id);
       for (const id of ids) removeBody(id);
+      bodyJoints.clear();
       self.postMessage({ type: 'removed', ids });
       break;
     }

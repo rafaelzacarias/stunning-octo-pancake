@@ -12,8 +12,10 @@ import { VFXDirector } from './vfx/VFXDirector.js';
 import { CameraDirector, CAMERA_PRESETS } from './camera/CameraDirector.js';
 import { AudioEngine } from './audio/AudioEngine.js';
 import { ControlPanel } from './ui/ControlPanel.js';
-import { getScrapLibrary } from './objects/ScrapLibrary.js';
-import { updateHeatTime } from './materials/HeatShader.js';
+import { getScrapLibrary, getScrapDef } from './objects/ScrapLibrary.js';
+import { getMetalMaterial } from './materials/MetalMaterial.js';
+import { updateHeatTime, ensureHeatAttributes } from './materials/HeatShader.js';
+import { ThumbnailRenderer } from './ui/ThumbnailRenderer.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -26,7 +28,9 @@ class ShreddingSim {
       quality: 'high',
       timeScale: 1,
       autoFeed: false,
-      audioOn: true,
+      // Audio starts muted: nothing is allowed to make a sound until the user
+      // explicitly switches the audio engine on.
+      audioOn: false,
       selectedType: 'can',
       manualQuality: false,
     };
@@ -37,6 +41,10 @@ class ShreddingSim {
     this._downPos = new THREE.Vector2();
     this._adaptTimer = 0;
     this._dynScale = 1;
+    // Highest tier the guard is allowed to climb back to (index into
+    // ['low','medium','high','ultra']). Raised when the user picks a tier.
+    this._qualityCeiling = 2;
+    this._headroom = 0;
     this._grindLevel = 0;
   }
 
@@ -130,6 +138,10 @@ class ShreddingSim {
     this.engine.renderer.compile(this.engine.scene, this.engine.camera);
     this.postfx.render(1 / 60, 0);
 
+    this.ui.setLoadingProgress(0.98, 'Rendering item previews');
+    await nextFrame();
+    this._buildThumbnails();
+
     this.ui.setLoadingProgress(1, 'Ready');
     await nextFrame();
     this.ui.hideLoading();
@@ -142,6 +154,9 @@ class ShreddingSim {
     try {
       await this.audio.start();
       this.audio.setMasterVolume(0.72);
+      // Graph is live but silenced. The UI audio button is the only thing that
+      // lifts the mute, so page load and the seed drops below stay silent.
+      this.audio.setMuted(!this.state.audioOn);
     } catch (e) {
       this.ui.setNotice('Audio unavailable in this browser', 3000);
     }
@@ -170,16 +185,12 @@ class ShreddingSim {
       onImpact: (point, intensity, hardness) => {
         this.audio.impact(intensity, hardness);
         this.vfx.impact(point, intensity);
-        this.camera.addTrauma(intensity * 0.22);
       },
       onTear: (point, intensity, spec, kind) => {
         this.audio.tear(intensity * (0.6 + spec.hardness * 0.5));
-        this.camera.addTrauma(0.1 + intensity * 0.3);
         if (kind === 'chop') this.audio.impact(intensity * 0.7, spec.hardness);
       },
-      onDeform: (entry, severity) => {
-        if (severity > 0.5) this.camera.addTrauma(severity * 0.04);
-      },
+      onDeform: () => {},
     };
   }
 
@@ -202,7 +213,11 @@ class ShreddingSim {
         for (let i = 0; i < n; i++) setTimeout(() => this._spawn(id), i * 130);
       },
       onCameraPreset: (id) => this.camera?.apply(id),
-      onQuality: (id) => { this.state.manualQuality = true; this._setQuality(id); },
+      onQuality: (id) => {
+        this.state.manualQuality = true;
+        this._qualityCeiling = ['low', 'medium', 'high', 'ultra'].indexOf(id);
+        this._setQuality(id);
+      },
       onAudioToggle: (on) => { this.state.audioOn = on; this.audio?.setMuted(!on); },
       onVolume: (v) => this.audio?.setMasterVolume(v),
       onClear: () => {
@@ -251,8 +266,11 @@ class ShreddingSim {
       else if (e.code === 'KeyR') { const v = !this.state.reverse; this.state.reverse = v; this.physics.setShredder({ reverse: v }); this.audio.setReverse(v); this.ui.setReverse(v); }
       else if (e.code === 'KeyC') { this.fragments.clear(); }
       else if (e.code.startsWith('Digit')) {
-        const n = parseInt(e.code.slice(5), 10);
-        if (n >= 1 && n <= lib.length) { this.state.selectedType = lib[n - 1].id; this._spawn(lib[n - 1].id); }
+        // Items carry their own `key` ('1'..'9','0'); the library is longer
+        // than the number row, so the rest are click-only.
+        const digit = e.code.slice(5);
+        const def = lib.find((d) => d.key === digit);
+        if (def) { this.state.selectedType = def.id; this._spawn(def.id); }
       } else if (/^F[1-5]$/.test(e.key)) {
         e.preventDefault();
         const p = CAMERA_PRESETS.find((x) => x.key === e.key);
@@ -280,6 +298,59 @@ class ShreddingSim {
     if (!inHopper && !onBelt) return;
 
     this._spawnAt(this.state.selectedType, hit);
+  }
+
+  /* -------------------------------------------------------- item previews */
+
+  /** Assemble a throwaway Object3D that mirrors how an item will look in-world. */
+  _previewObject(def) {
+    const makeMesh = (materialName, built, offset, rotation) => {
+      const geometry = built.geometry;
+      // Every metal material is heat-patched and reads these attributes.
+      ensureHeatAttributes(geometry, 0, -1000);
+      const mesh = new THREE.Mesh(geometry, getMetalMaterial(materialName, this.state.quality));
+      if (rotation) mesh.rotation.set(rotation[0] || 0, rotation[1] || 0, rotation[2] || 0);
+      if (offset) mesh.position.set(offset[0] || 0, offset[1] || 0, offset[2] || 0);
+      return mesh;
+    };
+
+    if (def.assembly && Array.isArray(def.parts)) {
+      const group = new THREE.Group();
+      for (const part of def.parts) {
+        group.add(makeMesh(part.material, part.build(), part.offset, part.rotation));
+      }
+      return group;
+    }
+    return makeMesh(def.material, def.build());
+  }
+
+  /**
+   * Render one thumbnail per feed-stock item into the palette.
+   *
+   * This spins up a second WebGL context, so it runs as a single batch during
+   * boot and the renderer is torn down immediately afterwards - browsers cap
+   * live contexts and the main renderer must never lose its own.
+   */
+  _buildThumbnails() {
+    let tr = null;
+    try {
+      tr = new ThumbnailRenderer({ size: 112, pixelRatio: 2, envMap: this.envMap });
+    } catch (e) {
+      return;   // previews are a nicety; the cards degrade to their monogram
+    }
+    for (const def of getScrapLibrary()) {
+      let obj = null;
+      try {
+        obj = this._previewObject(def);
+        const url = tr.render(obj);
+        if (url) this.ui.setThumbnail(def.id, url);
+      } catch (e) {
+        /* skip this one, keep the rest */
+      } finally {
+        obj?.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+      }
+    }
+    tr.dispose();
   }
 
   /* ---------------------------------------------------------------- machine */
@@ -316,7 +387,10 @@ class ShreddingSim {
     if (this.fragments.entries.size >= SETTINGS.maxScrapBodies) {
       this.ui.setNotice('Body budget reached — clearing space', 1400);
     }
-    this.fragments.spawn(typeId, pos, new THREE.Vector3(0, -0.3, -0.15));
+    const def = getScrapDef(typeId);
+    const velocity = new THREE.Vector3(0, -0.3, -0.15);
+    if (def.assembly) this.fragments.spawnAssembly(typeId, pos, velocity);
+    else this.fragments.spawn(typeId, pos, velocity);
     this.audio?.hydraulicHiss(0.35);
   }
 
@@ -348,7 +422,7 @@ class ShreddingSim {
     this._grindLevel *= Math.exp(-rawDt * 9);
 
     // camera + focus
-    this.camera.update(rawDt, this.load);
+    this.camera.update(rawDt);
 
     // auto feed
     if (this.state.autoFeed) {
@@ -403,6 +477,7 @@ class ShreddingSim {
     const tierScale = QUALITY[this.state.quality].scale;
 
     if (fps < 57.5) {
+      this._headroom = 0;
       if (this._dynScale > 0.66) {
         this._dynScale = Math.max(0.66, this._dynScale - 0.07);
         this._applyRenderScale();
@@ -414,8 +489,23 @@ class ShreddingSim {
       }
       this.engine._fpsHistory.fill(0);
     } else if (fps > 58.5 && this._dynScale < 1) {
+      this._headroom = 0;
       this._dynScale = Math.min(1, this._dynScale + 0.035);
       this._applyRenderScale();
+    } else if (fps > 59 && this._dynScale >= 1 && tier < this._qualityCeiling) {
+      // Sustained headroom at full resolution: give the tier back. Without
+      // this the guard is a one-way ratchet - a brief hitch during load or a
+      // background app permanently parks the user on Low.
+      this._headroom = (this._headroom || 0) + 1;
+      if (this._headroom >= 5) {
+        this._headroom = 0;
+        this._setQuality(order[tier + 1]);
+        this._applyRenderScale();
+        this.ui.setNotice(`Headroom available: quality → ${order[tier + 1]}`, 2000);
+        this.engine._fpsHistory.fill(0);
+      }
+    } else {
+      this._headroom = 0;
     }
     void tierScale;
   }
