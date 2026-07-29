@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="description" content="Ultra-realistic 3D industrial metal shredding simulator built with Three.js and Rapier3D." />
+    <title>Industrial Metal Shredder — Realtime Destruction Simulator</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⚙️</text></svg>" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --panel: rgba(14, 16, 19, 0.82);
+        --panel-solid: #0e1013;
+        --line: rgba(255, 255, 255, 0.09);
+        --text: #e7e9ec;
+        --muted: #8b929c;
+        --hot: #ff7a1a;
+        --hot-dim: rgba(255, 122, 26, 0.16);
+        --good: #46d17d;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #05060700;
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        touch-action: none;
+      }
+      #app { position: fixed; inset: 0; }
+      canvas#viewport { display: block; width: 100%; height: 100%; outline: none; }
+
+      /* ---------- Boot / loading ---------- */
+      #boot {
+        position: fixed; inset: 0; z-index: 90;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 18px;
+        background:
+          radial-gradient(1200px 700px at 50% 40%, #16191d 0%, #08090b 60%, #030405 100%);
+        transition: opacity 700ms ease, visibility 700ms ease;
+      }
+      #boot.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+      #boot h1 {
+        margin: 0; font-size: clamp(20px, 3.4vw, 34px); font-weight: 700; letter-spacing: 0.18em;
+        text-transform: uppercase; text-align: center;
+      }
+      #boot h1 span { color: var(--hot); }
+      #boot .sub { color: var(--muted); font-size: 12px; letter-spacing: 0.26em; text-transform: uppercase; }
+      #boot .bar { width: min(420px, 70vw); height: 3px; background: rgba(255,255,255,0.08); border-radius: 99px; overflow: hidden; }
+      #boot .bar > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #ffb35c, var(--hot)); transition: width 260ms ease; }
+      #boot .stage { color: var(--muted); font-size: 12px; min-height: 16px; font-variant-numeric: tabular-nums; }
+      #boot .err { color: #ff6b6b; font-size: 13px; max-width: 560px; text-align: center; line-height: 1.5; }
+
+      /* ---------- Start gate (needed for Web Audio) ---------- */
+      #start-gate {
+        position: fixed; inset: 0; z-index: 80;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(3, 4, 5, 0.55);
+        backdrop-filter: blur(3px);
+        transition: opacity 420ms ease, visibility 420ms ease;
+      }
+      #start-gate.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+      #start-gate button {
+        appearance: none; cursor: pointer;
+        padding: 16px 34px; border-radius: 3px;
+        border: 1px solid rgba(255, 122, 26, 0.55);
+        background: linear-gradient(180deg, rgba(255,122,26,0.20), rgba(255,122,26,0.08));
+        color: #fff; font-size: 14px; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 600;
+        transition: transform 140ms ease, box-shadow 200ms ease, background 200ms ease;
+        box-shadow: 0 0 0 rgba(255,122,26,0);
+      }
+      #start-gate button:hover { transform: translateY(-1px); box-shadow: 0 6px 34px rgba(255,122,26,0.28); }
+
+      #ui-root { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+      #ui-root > * { pointer-events: auto; }
+
+      @media (prefers-reduced-motion: reduce) {
+        #boot, #start-gate, #boot .bar > i { transition: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="viewport"></canvas>
+      <div id="ui-root"></div>
+    </div>
+
+    <div id="start-gate" class="hidden">
+      <button id="start-button" type="button">Engage Shredder</button>
+    </div>
+
+    <div id="boot">
+      <h1>Industrial <span>Metal</span> Shredder</h1>
+      <div class="sub">Realtime Destruction Simulator</div>
+      <div class="bar"><i id="boot-bar"></i></div>
+      <div class="stage" id="boot-stage">Initialising…</div>
+      <div class="err" id="boot-error" hidden></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
