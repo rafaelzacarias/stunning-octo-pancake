@@ -1,22 +1,20 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // Relative base so the same build works from a user site, a project site
+  // (https://<user>.github.io/<repo>/) or a plain file server without rebuilding.
   base: './',
   server: {
     port: 5173,
-    headers: {
-      // Enables SharedArrayBuffer for the zero-copy physics transform channel.
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
   },
   preview: {
     port: 4173,
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
   },
+  // NOTE: no COOP/COEP headers here on purpose. They would make dev
+  // cross-origin isolated while production is not, and GitHub Pages cannot set
+  // response headers at all. The physics worker uses transferable
+  // ArrayBuffers (not SharedArrayBuffer) and Rapier's wasm is inlined, so
+  // nothing needs cross-origin isolation.
   worker: {
     format: 'es',
   },
