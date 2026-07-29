@@ -1,0 +1,1621 @@
+/* ==================================================================
+   shredding.io — Control Panel UI
+   Industrial control room / Hardspace: Shipbreaker visual language.
+   Imported from main.js:  import './ui/style.css'
+   ================================================================== */
+
+:root {
+  --sio-bg: rgba(10, 12, 14, 0.72);
+  --sio-bg-solid: #0a0c0e;
+  --sio-bg-deep: #06080a;
+  --sio-line: rgba(255, 255, 255, 0.08);
+  --sio-line-strong: rgba(255, 255, 255, 0.16);
+  --sio-amber: #ffb020;
+  --sio-cyan: #33d6ff;
+  --sio-danger: #ff3b30;
+  --sio-green: #39d98a;
+  --sio-text: #e6ebef;
+  --sio-dim: #8b969e;
+  --sio-faint: #5c666d;
+  --sio-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sio-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --sio-notch: 12px;
+  --sio-gap: 14px;
+  --sio-pad: 16px;
+  --sio-left-w: 288px;
+  --sio-right-w: 320px;
+}
+
+/* ------------------------------------------------------------------
+   Root container — transparent to pointer events so the 3D canvas
+   stays orbit-draggable in the gaps between panels.
+   ------------------------------------------------------------------ */
+
+.sio-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: var(--sio-left-w) minmax(0, 1fr) var(--sio-right-w);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "left .   perf"
+    "left .   right"
+    "help cam right";
+  gap: var(--sio-gap);
+  padding: var(--sio-pad);
+  pointer-events: none;
+  font-family: var(--sio-sans);
+  color: var(--sio-text);
+  font-size: 13px;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: opacity 0.24s ease;
+}
+
+.sio-ui *,
+.sio-ui *::before,
+.sio-ui *::after {
+  box-sizing: border-box;
+}
+
+.sio-ui.ui-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------
+   Panels
+   ------------------------------------------------------------------ */
+
+.sio-panel {
+  position: relative;
+  pointer-events: auto;
+  background: var(--sio-bg);
+  border: 1px solid var(--sio-line);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  clip-path: polygon(
+    0 var(--sio-notch),
+    var(--sio-notch) 0,
+    100% 0,
+    100% calc(100% - var(--sio-notch)),
+    calc(100% - var(--sio-notch)) 100%,
+    0 100%
+  );
+}
+
+/* faint technical hatch in the notched corners */
+.sio-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 176, 32, 0.22) 0 1px, transparent 1px) top left / 18px 18px no-repeat,
+    linear-gradient(135deg, rgba(51, 214, 255, 0.18) 0 1px, transparent 1px) bottom right / 18px 18px no-repeat;
+  opacity: 0.9;
+}
+
+.sio-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 13px 8px;
+  border-bottom: 1px solid var(--sio-line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0));
+}
+
+.sio-panel-title {
+  font-family: var(--sio-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--sio-text);
+}
+
+.sio-panel-tag {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--sio-faint);
+  border: 1px solid var(--sio-line);
+  border-radius: 2px;
+  padding: 2px 5px;
+  white-space: nowrap;
+}
+
+.sio-panel-body {
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* live scanline when the machine is running */
+.sio-ui.is-live .sio-panel--machine .sio-panel-head::after,
+.sio-ui.is-live .sio-panel--telemetry .sio-panel-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--sio-amber), transparent);
+  animation: sio-scan 3.4s linear infinite;
+  opacity: 0.65;
+}
+
+.sio-panel--machine .sio-panel-head,
+.sio-panel--telemetry .sio-panel-head {
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes sio-scan {
+  0% { top: 0; opacity: 0; }
+  12% { opacity: 0.7; }
+  88% { opacity: 0.7; }
+  100% { top: 100%; opacity: 0; }
+}
+
+.sio-ui.is-live .sio-panel--machine {
+  border-color: rgba(255, 176, 32, 0.22);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 24px rgba(255, 176, 32, 0.08);
+}
+
+/* ------------------------------------------------------------------
+   Columns
+   ------------------------------------------------------------------ */
+
+.sio-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sio-gap);
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.sio-col--left { grid-area: left; }
+.sio-col--right { grid-area: right; }
+
+.sio-col::-webkit-scrollbar { width: 6px; }
+.sio-col::-webkit-scrollbar-track { background: transparent; }
+.sio-col::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+.sio-col::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* ------------------------------------------------------------------
+   Generic form scaffolding
+   ------------------------------------------------------------------ */
+
+.sio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.sio-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.sio-field-label {
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--sio-faint);
+  text-transform: uppercase;
+}
+
+.sio-divider {
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--sio-line) 0 6px,
+    transparent 6px 12px
+  );
+  margin: 1px 0;
+}
+
+/* ------------------------------------------------------------------
+   POWER rocker
+   ------------------------------------------------------------------ */
+
+.sio-rocker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--sio-line-strong);
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, #1b2026, #0d1114);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 2px 0 rgba(0, 0, 0, 0.6),
+    0 6px 14px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, border-color 0.2s ease;
+}
+
+.sio-rocker:active {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.7),
+    0 0 0 rgba(0, 0, 0, 0.6);
+}
+
+.sio-rocker:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+
+.sio-rocker.is-on {
+  border-color: rgba(57, 217, 138, 0.4);
+  background: linear-gradient(180deg, #1f262a, #0e1418);
+}
+
+.sio-rocker-body {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 46px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #05070a, #12171b);
+  border: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+
+.sio-rocker-lever {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 3px;
+  height: 26px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #cfd6dc 0%, #8e979f 55%, #656d74 100%);
+  box-shadow:
+    0 6px 10px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transform-origin: center bottom;
+  transition: top 0.16s cubic-bezier(0.3, 1.4, 0.5, 1), height 0.16s ease, background 0.2s ease;
+}
+
+.sio-rocker.is-on .sio-rocker-lever {
+  top: 17px;
+  background: linear-gradient(180deg, #6d757c 0%, #9aa3aa 45%, #d3dade 100%);
+  box-shadow:
+    0 -4px 10px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.sio-rocker-ridges {
+  position: absolute;
+  inset: 5px 8px;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.22) 0 1px,
+    transparent 1px 4px
+  );
+  border-radius: 2px;
+}
+
+.sio-rocker-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sio-rocker-title {
+  font-family: var(--sio-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--sio-text);
+}
+
+.sio-rocker-state {
+  font-family: var(--sio-mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--sio-faint);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+.sio-rocker.is-on .sio-rocker-state {
+  color: var(--sio-green);
+  text-shadow: 0 0 14px rgba(57, 217, 138, 0.6);
+}
+
+.sio-led {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #2c3339, #0c1012 70%);
+  border: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.12);
+  transition: background 0.2s ease, box-shadow 0.25s ease;
+}
+
+.sio-rocker.is-on .sio-led {
+  background: radial-gradient(circle at 35% 30%, #d8ffe9, #2fe08c 55%, #0d7a48 100%);
+  box-shadow:
+    0 0 10px rgba(57, 217, 138, 0.9),
+    0 0 22px rgba(57, 217, 138, 0.45),
+    inset 0 1px 2px rgba(255, 255, 255, 0.5);
+  animation: sio-led-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes sio-led-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.28); }
+}
+
+/* ------------------------------------------------------------------
+   Buttons
+   ------------------------------------------------------------------ */
+
+.sio-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 11px;
+  font: inherit;
+  color: var(--sio-text);
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--sio-line-strong);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.012));
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.07s ease, color 0.15s ease;
+}
+
+.sio-btn:hover { background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03)); }
+.sio-btn:active { transform: translateY(1px); }
+.sio-btn:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+
+.sio-btn-label {
+  flex: 1 1 auto;
+  font-family: var(--sio-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sio-btn-state {
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--sio-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.sio-btn-key,
+.sio-kbd {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 2px 5px;
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  text-align: center;
+  color: var(--sio-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--sio-line);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+}
+
+.sio-btn-ico {
+  flex: 0 0 auto;
+  display: block;
+  width: 16px;
+  height: 16px;
+  color: var(--sio-dim);
+}
+
+.sio-btn-ico svg { display: block; width: 16px; height: 16px; }
+
+.sio-ico-stroke,
+.sio-ico-wave,
+.sio-ico-mute {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sio-ico-mute { opacity: 0; }
+
+.sio-btn--reverse.is-on {
+  border-color: rgba(255, 176, 32, 0.5);
+  background: linear-gradient(180deg, rgba(255, 176, 32, 0.2), rgba(255, 176, 32, 0.05));
+  color: #ffd694;
+}
+.sio-btn--reverse.is-on .sio-btn-state {
+  color: var(--sio-amber);
+  text-shadow: 0 0 12px rgba(255, 176, 32, 0.65);
+}
+
+.sio-btn--audio.is-on .sio-btn-ico { color: var(--sio-cyan); }
+.sio-btn--audio.is-on .sio-btn-state { color: var(--sio-cyan); }
+.sio-btn--audio:not(.is-on) .sio-ico-wave { opacity: 0; }
+.sio-btn--audio:not(.is-on) .sio-ico-mute { opacity: 1; color: var(--sio-danger); }
+.sio-btn--audio:not(.is-on) .sio-btn-state { color: var(--sio-danger); }
+
+.sio-btn--danger {
+  justify-content: center;
+  border-color: rgba(255, 59, 48, 0.32);
+  background: linear-gradient(180deg, rgba(255, 59, 48, 0.14), rgba(255, 59, 48, 0.03));
+  color: #ffb4ae;
+}
+.sio-btn--danger:hover {
+  border-color: rgba(255, 59, 48, 0.6);
+  background: linear-gradient(180deg, rgba(255, 59, 48, 0.28), rgba(255, 59, 48, 0.08));
+  color: #fff;
+}
+.sio-btn--danger .sio-btn-ico { color: inherit; }
+.sio-btn--danger .sio-btn-label { flex: 0 1 auto; }
+
+/* ------------------------------------------------------------------
+   Sliders
+   ------------------------------------------------------------------ */
+
+.sio-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sio-slider-value {
+  font-family: var(--sio-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-cyan);
+  text-shadow: 0 0 10px rgba(51, 214, 255, 0.35);
+}
+
+.sio-slider.is-disabled { opacity: 0.4; }
+
+.sio-range-wrap {
+  position: relative;
+  height: 22px;
+}
+
+.sio-range-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+.sio-range-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--sio-cyan), var(--sio-amber));
+  box-shadow: 0 0 12px rgba(51, 214, 255, 0.35);
+}
+
+.sio-range {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: ew-resize;
+}
+.sio-range:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+.sio-range::-webkit-slider-runnable-track { height: 22px; background: transparent; }
+.sio-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.75);
+  background: linear-gradient(180deg, #eef2f5, #98a2aa);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 3px 7px rgba(0, 0, 0, 0.65);
+}
+.sio-range::-moz-range-track { height: 22px; background: transparent; border: 0; }
+.sio-range::-moz-range-thumb {
+  width: 11px;
+  height: 20px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.75);
+  background: linear-gradient(180deg, #eef2f5, #98a2aa);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 3px 7px rgba(0, 0, 0, 0.65);
+}
+
+/* ------------------------------------------------------------------
+   Select
+   ------------------------------------------------------------------ */
+
+.sio-select-wrap { position: relative; }
+
+.sio-select {
+  width: 100%;
+  padding: 8px 30px 8px 10px;
+  font-family: var(--sio-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--sio-text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--sio-line-strong);
+  border-radius: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.sio-select:hover { background: rgba(255, 255, 255, 0.08); }
+.sio-select:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+.sio-select option { background: #10161a; color: var(--sio-text); }
+
+.sio-select-arrow {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  pointer-events: none;
+  color: var(--sio-faint);
+}
+.sio-select-arrow svg { display: block; width: 16px; height: 16px; }
+
+/* ------------------------------------------------------------------
+   Switch toggles
+   ------------------------------------------------------------------ */
+
+.sio-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sio-switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.sio-switch:hover { background: rgba(255, 255, 255, 0.045); }
+
+.sio-switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sio-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.sio-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #b8c1c8, #6f787f);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  transition: transform 0.18s cubic-bezier(0.3, 1.3, 0.5, 1), background 0.18s ease;
+}
+
+.sio-switch-input:checked + .sio-switch-track {
+  background: linear-gradient(90deg, rgba(51, 214, 255, 0.35), rgba(51, 214, 255, 0.6));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 12px rgba(51, 214, 255, 0.3);
+}
+.sio-switch-input:checked + .sio-switch-track .sio-switch-knob {
+  transform: translateX(14px);
+  background: linear-gradient(180deg, #ffffff, #cfe9f4);
+}
+.sio-switch-input:focus-visible + .sio-switch-track {
+  outline: 2px solid var(--sio-cyan);
+  outline-offset: 2px;
+}
+
+.sio-switch-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sio-switch-label {
+  font-size: 11.5px;
+  color: var(--sio-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sio-switch-hint {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--sio-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------
+   Feed stock palette
+   ------------------------------------------------------------------ */
+
+.sio-panel--feed { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sio-panel--feed .sio-panel-body { min-height: 0; padding: 9px; }
+
+.sio-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.sio-cards::-webkit-scrollbar { width: 6px; }
+.sio-cards::-webkit-scrollbar-track { background: transparent; }
+.sio-cards::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 3px; }
+
+.sio-card { position: relative; }
+
+.sio-card-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 46px 8px 8px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--sio-line);
+  border-left: 2px solid rgba(255, 176, 32, 0.35);
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.07s ease;
+}
+.sio-card-main:hover {
+  background: linear-gradient(90deg, rgba(255, 176, 32, 0.16), rgba(255, 255, 255, 0.02));
+  border-left-color: var(--sio-amber);
+}
+.sio-card-main:active { transform: translateX(2px) scale(0.995); }
+.sio-card-main:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+
+.sio-card-key {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  color: var(--sio-amber);
+  background: rgba(255, 176, 32, 0.1);
+  border: 1px solid rgba(255, 176, 32, 0.28);
+  border-radius: 2px;
+}
+
+.sio-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sio-card-label {
+  font-size: 12px;
+  color: var(--sio-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sio-card-hint {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--sio-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sio-card-mass {
+  flex: 0 0 auto;
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--sio-line);
+  border-radius: 2px;
+  padding: 2px 5px;
+}
+
+.sio-card-burst {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  transform: translateY(-50%);
+  padding: 4px 7px;
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--sio-cyan);
+  cursor: pointer;
+  background: rgba(51, 214, 255, 0.1);
+  border: 1px solid rgba(51, 214, 255, 0.3);
+  border-radius: 2px;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+.sio-card-burst:hover {
+  background: rgba(51, 214, 255, 0.28);
+  color: #eafaff;
+  box-shadow: 0 0 12px rgba(51, 214, 255, 0.4);
+}
+.sio-card-burst:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 2px; }
+
+.sio-empty {
+  padding: 14px 8px;
+  text-align: center;
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--sio-faint);
+}
+
+/* ------------------------------------------------------------------
+   LOAD gauge
+   ------------------------------------------------------------------ */
+
+.sio-gauge-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.sio-gauge { width: 100%; max-width: 230px; }
+.sio-gauge-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+.sio-gauge-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 11;
+  stroke-linecap: butt;
+}
+
+.sio-gauge-redline {
+  fill: none;
+  stroke: rgba(255, 59, 48, 0.28);
+  stroke-width: 11;
+}
+
+.sio-gauge-value {
+  fill: none;
+  stroke: url(#sioGaugeGrad);
+  stroke-width: 11;
+  stroke-linecap: butt;
+  filter: drop-shadow(0 0 6px rgba(255, 176, 32, 0.45));
+  transition: stroke-dashoffset 0.08s linear;
+}
+
+.sio-gauge-ticks-minor { fill: none; stroke: rgba(255, 255, 255, 0.18); stroke-width: 1; }
+.sio-gauge-ticks-major { fill: none; stroke: rgba(255, 255, 255, 0.45); stroke-width: 1.8; }
+
+.sio-gauge-needle {
+  transform-box: view-box;
+  transform-origin: 100px 88px;
+}
+.sio-gauge-needle-body { fill: #f2f5f7; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.8)); }
+.sio-gauge-needle-tail { fill: #8b969e; }
+.sio-ui.is-overload .sio-gauge-needle-body { fill: #ff6b62; }
+
+.sio-gauge-hub { stroke: rgba(255, 255, 255, 0.2); stroke-width: 1; }
+.sio-gauge-hub-dot { fill: rgba(255, 255, 255, 0.5); }
+
+.sio-gauge-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-top: -22px;
+}
+
+.sio-gauge-num {
+  font-family: var(--sio-mono);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-text);
+  text-shadow: 0 0 18px rgba(255, 176, 32, 0.3);
+  transition: color 0.2s ease;
+}
+.sio-ui.is-overload .sio-gauge-num {
+  color: var(--sio-danger);
+  text-shadow: 0 0 22px rgba(255, 59, 48, 0.6);
+}
+
+.sio-gauge-unit {
+  font-family: var(--sio-mono);
+  font-size: 12px;
+  color: var(--sio-faint);
+}
+
+.sio-gauge-caption {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--sio-faint);
+  margin-top: 3px;
+}
+
+/* OVERLOAD lamp */
+.sio-lamp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 59, 48, 0.22);
+  background: rgba(255, 59, 48, 0.06);
+  opacity: 0.25;
+  filter: saturate(0.3);
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+.sio-lamp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #5a2724, #2a1210);
+}
+
+.sio-lamp-text {
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #a05c58;
+}
+
+.sio-lamp.is-on {
+  opacity: 1;
+  filter: none;
+  border-color: rgba(255, 59, 48, 0.7);
+  animation: sio-overload 0.85s ease-in-out infinite;
+}
+.sio-lamp.is-on .sio-lamp-dot {
+  background: radial-gradient(circle at 35% 30%, #ffe3e0, #ff3b30 55%, #7a1410);
+  box-shadow: 0 0 10px rgba(255, 59, 48, 0.95), 0 0 22px rgba(255, 59, 48, 0.55);
+}
+.sio-lamp.is-on .sio-lamp-text { color: #ff6b62; }
+
+@keyframes sio-overload {
+  0%, 100% {
+    background: rgba(255, 59, 48, 0.07);
+    box-shadow: 0 0 0 rgba(255, 59, 48, 0);
+  }
+  50% {
+    background: rgba(255, 59, 48, 0.26);
+    box-shadow: 0 0 20px rgba(255, 59, 48, 0.45);
+  }
+}
+
+/* ------------------------------------------------------------------
+   RPM strip
+   ------------------------------------------------------------------ */
+
+.sio-rpm { display: flex; flex-direction: column; gap: 6px; }
+
+.sio-rpm-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sio-rpm-label {
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--sio-faint);
+}
+
+.sio-rpm-readout { display: flex; align-items: baseline; gap: 3px; }
+
+.sio-rpm-value {
+  font-family: var(--sio-mono);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-cyan);
+  text-shadow: 0 0 12px rgba(51, 214, 255, 0.35);
+}
+
+.sio-rpm-unit {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  color: var(--sio-faint);
+}
+
+.sio-rpm-track {
+  position: relative;
+  height: 10px;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.09) 0 1px, transparent 1px 10%),
+    rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+
+.sio-rpm-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, rgba(51, 214, 255, 0.55), rgba(255, 176, 32, 0.85));
+}
+
+.sio-rpm-needle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.85);
+}
+
+.sio-ui.is-reverse .sio-rpm-fill {
+  background: linear-gradient(90deg, rgba(255, 176, 32, 0.85), rgba(255, 59, 48, 0.75));
+}
+
+/* ------------------------------------------------------------------
+   Telemetry counters
+   ------------------------------------------------------------------ */
+
+.sio-telemetry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--sio-line);
+  border: 1px solid var(--sio-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sio-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.sio-stat-label {
+  font-family: var(--sio-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  color: var(--sio-faint);
+}
+
+.sio-stat-value {
+  font-family: var(--sio-mono);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-text);
+}
+
+/* ------------------------------------------------------------------
+   Perf HUD (top-right)
+   ------------------------------------------------------------------ */
+
+.sio-panel--perf {
+  grid-area: perf;
+  justify-self: end;
+  align-self: start;
+  width: var(--sio-right-w);
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.sio-perf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sio-fps { display: flex; align-items: baseline; gap: 4px; }
+
+.sio-fps-value {
+  font-family: var(--sio-mono);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-text);
+  transition: color 0.2s ease;
+}
+.sio-fps-value[data-tier="good"] { color: var(--sio-green); text-shadow: 0 0 14px rgba(57, 217, 138, 0.35); }
+.sio-fps-value[data-tier="warn"] { color: var(--sio-amber); text-shadow: 0 0 14px rgba(255, 176, 32, 0.35); }
+.sio-fps-value[data-tier="bad"] { color: var(--sio-danger); text-shadow: 0 0 14px rgba(255, 59, 48, 0.45); }
+
+.sio-fps-unit {
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--sio-faint);
+}
+
+.sio-spark {
+  display: block;
+  border: 1px solid var(--sio-line);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.sio-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 8px;
+}
+
+.sio-perf-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+
+.sio-perf-label {
+  font-family: var(--sio-mono);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: var(--sio-faint);
+}
+
+.sio-perf-num { display: flex; align-items: baseline; gap: 2px; }
+
+.sio-perf-value {
+  font-family: var(--sio-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sio-text);
+}
+
+.sio-perf-unit {
+  font-family: var(--sio-mono);
+  font-size: 8.5px;
+  color: var(--sio-faint);
+}
+
+/* ------------------------------------------------------------------
+   Camera preset bar (bottom-center)
+   ------------------------------------------------------------------ */
+
+.sio-panel--camera {
+  grid-area: cam;
+  align-self: end;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 11px;
+  --sio-notch: 9px;
+}
+
+.sio-camera-label {
+  font-family: var(--sio-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--sio-faint);
+}
+
+.sio-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid var(--sio-line);
+  border-radius: 3px;
+}
+
+.sio-seg-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  font: inherit;
+  color: var(--sio-dim);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.18s ease;
+}
+.sio-seg-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--sio-text); }
+.sio-seg-btn:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 1px; }
+
+.sio-seg-btn.is-active {
+  background: linear-gradient(180deg, rgba(255, 176, 32, 0.28), rgba(255, 176, 32, 0.12));
+  color: #fff0d6;
+  box-shadow: inset 0 0 0 1px rgba(255, 176, 32, 0.45), 0 0 16px rgba(255, 176, 32, 0.2);
+}
+
+.sio-seg-label {
+  font-family: var(--sio-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+}
+
+.sio-seg-key {
+  font-family: var(--sio-mono);
+  font-size: 8.5px;
+  padding: 1px 4px;
+  color: var(--sio-faint);
+  border: 1px solid var(--sio-line);
+  border-radius: 2px;
+}
+.sio-seg-btn.is-active .sio-seg-key {
+  color: var(--sio-amber);
+  border-color: rgba(255, 176, 32, 0.4);
+}
+
+/* ------------------------------------------------------------------
+   Collapsible keyboard help (bottom-left)
+   ------------------------------------------------------------------ */
+
+.sio-panel--help {
+  grid-area: help;
+  align-self: end;
+  justify-self: start;
+  width: var(--sio-left-w);
+  --sio-notch: 9px;
+  overflow: hidden;
+}
+.sio-panel--help.is-hidden { display: none; }
+
+.sio-help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 11px;
+  font: inherit;
+  color: var(--sio-text);
+  cursor: pointer;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+  border: 0;
+  border-bottom: 1px solid var(--sio-line);
+}
+.sio-help-head:hover { background: rgba(255, 255, 255, 0.06); }
+.sio-help-head:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: -2px; }
+
+.sio-help-title {
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--sio-dim);
+}
+
+.sio-help-chevron {
+  display: block;
+  width: 16px;
+  height: 16px;
+  color: var(--sio-faint);
+  transition: transform 0.2s ease;
+}
+.sio-help-chevron svg { display: block; width: 16px; height: 16px; }
+
+.sio-help-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 11px;
+  max-height: 220px;
+  overflow: hidden;
+  transition: max-height 0.24s ease, padding 0.24s ease, opacity 0.2s ease;
+}
+
+.sio-panel--help.is-collapsed .sio-help-body {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+.sio-panel--help.is-collapsed .sio-help-chevron { transform: rotate(-90deg); }
+.sio-panel--help.is-collapsed .sio-help-head { border-bottom-color: transparent; }
+
+.sio-help-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.sio-kbd { min-width: 56px; flex: 0 0 auto; }
+
+.sio-help-desc {
+  font-size: 11px;
+  color: var(--sio-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------
+   Toast
+   ------------------------------------------------------------------ */
+
+.sio-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  transform: translate(-50%, 12px);
+  max-width: min(560px, 60vw);
+  padding: 9px 16px;
+  font-family: var(--sio-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #fff3dc;
+  text-align: center;
+  background: rgba(10, 12, 14, 0.9);
+  border: 1px solid rgba(255, 176, 32, 0.4);
+  border-radius: 2px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.7), 0 0 22px rgba(255, 176, 32, 0.12);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.22s ease, visibility 0.2s;
+}
+
+.sio-toast.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+/* ------------------------------------------------------------------
+   Boot overlay
+   ------------------------------------------------------------------ */
+
+.sio-boot,
+.sio-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(120% 90% at 50% 40%, #0c1013 0%, #05070a 60%, #020304 100%);
+  font-family: var(--sio-sans);
+  color: var(--sio-text);
+  overflow: hidden;
+  transition: opacity 0.55s ease, visibility 0.55s;
+}
+
+.sio-boot.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sio-boot-grid,
+.sio-gate-grid {
+  position: absolute;
+  inset: -50%;
+  background-image:
+    linear-gradient(rgba(51, 214, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(51, 214, 255, 0.06) 1px, transparent 1px);
+  background-size: 46px 46px;
+  transform: perspective(600px) rotateX(62deg);
+  animation: sio-grid-drift 9s linear infinite;
+  opacity: 0.5;
+  mask-image: radial-gradient(60% 50% at 50% 50%, #000 0%, transparent 100%);
+  -webkit-mask-image: radial-gradient(60% 50% at 50% 50%, #000 0%, transparent 100%);
+}
+
+@keyframes sio-grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 0 46px, 46px 0; }
+}
+
+.sio-boot-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 34%;
+  background: linear-gradient(180deg, transparent, rgba(51, 214, 255, 0.05), transparent);
+  animation: sio-boot-scan 5s ease-in-out infinite;
+}
+
+@keyframes sio-boot-scan {
+  0% { top: -34%; }
+  100% { top: 100%; }
+}
+
+.sio-boot-inner,
+.sio-gate-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, 78vw);
+  text-align: center;
+}
+
+.sio-boot-brand,
+.sio-gate-title {
+  font-family: var(--sio-mono);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: var(--sio-text);
+  text-shadow: 0 0 32px rgba(255, 176, 32, 0.28);
+}
+
+.sio-boot-sub,
+.sio-gate-sub {
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+  color: var(--sio-faint);
+  margin-bottom: 14px;
+}
+
+.sio-boot-bar {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--sio-line);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.sio-boot-fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--sio-cyan), var(--sio-amber));
+  box-shadow: 0 0 16px rgba(255, 176, 32, 0.5);
+  transition: transform 0.25s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.sio-boot-sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.32), transparent);
+  animation: sio-sweep 1.4s ease-in-out infinite;
+  opacity: 0;
+}
+.sio-boot.is-indeterminate .sio-boot-sweep { opacity: 1; }
+
+@keyframes sio-sweep {
+  0% { left: -34%; }
+  100% { left: 100%; }
+}
+
+.sio-boot-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  font-family: var(--sio-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.sio-boot-label { color: var(--sio-dim); }
+.sio-boot-percent { color: var(--sio-amber); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------
+   Start gate
+   ------------------------------------------------------------------ */
+
+.sio-gate { z-index: 70; cursor: default; }
+.sio-gate.is-leaving { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.sio-gate-btn {
+  position: relative;
+  margin-top: 8px;
+  padding: 16px 38px;
+  font-family: var(--sio-mono);
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  color: #0a0c0e;
+  cursor: pointer;
+  background: linear-gradient(180deg, #ffcc63, var(--sio-amber));
+  border: 1px solid rgba(255, 220, 150, 0.6);
+  border-radius: 2px;
+  box-shadow: 0 0 30px rgba(255, 176, 32, 0.35), 0 10px 30px rgba(0, 0, 0, 0.6);
+  transition: transform 0.1s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+.sio-gate-btn:hover { filter: brightness(1.08); box-shadow: 0 0 46px rgba(255, 176, 32, 0.55), 0 10px 30px rgba(0, 0, 0, 0.6); }
+.sio-gate-btn:active { transform: translateY(2px); }
+.sio-gate-btn:focus-visible { outline: 2px solid var(--sio-cyan); outline-offset: 4px; }
+
+.sio-gate-btn-ring {
+  position: absolute;
+  inset: -6px;
+  border: 1px solid rgba(255, 176, 32, 0.4);
+  border-radius: 3px;
+  animation: sio-ring 2.2s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes sio-ring {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.08); opacity: 0; }
+}
+
+.sio-gate-btn-label { position: relative; z-index: 1; font-weight: 700; }
+
+.sio-gate-note {
+  margin-top: 16px;
+  font-family: var(--sio-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--sio-faint);
+}
+
+/* ------------------------------------------------------------------
+   Responsive — graceful collapse down to 1280px and below
+   ------------------------------------------------------------------ */
+
+@media (max-width: 1600px) {
+  .sio-ui { --sio-left-w: 274px; --sio-right-w: 306px; }
+}
+
+@media (max-width: 1440px) {
+  .sio-ui {
+    --sio-left-w: 258px;
+    --sio-right-w: 288px;
+    --sio-gap: 11px;
+    --sio-pad: 12px;
+    font-size: 12.5px;
+  }
+  .sio-gauge { max-width: 200px; }
+  .sio-gauge-num { font-size: 26px; }
+  .sio-fps-value { font-size: 23px; }
+}
+
+@media (max-width: 1279px) {
+  .sio-ui {
+    --sio-left-w: 234px;
+    --sio-right-w: 262px;
+    --sio-gap: 9px;
+    --sio-pad: 9px;
+    --sio-notch: 9px;
+    font-size: 12px;
+  }
+  .sio-panel-body { padding: 10px; gap: 10px; }
+  .sio-switch-hint { display: none; }
+  .sio-card-hint { display: none; }
+  .sio-cards { max-height: 32vh; }
+  .sio-gauge { max-width: 178px; }
+  .sio-gauge-readout { margin-top: -18px; }
+  .sio-gauge-num { font-size: 22px; }
+  .sio-perf-grid { grid-template-columns: repeat(2, 1fr); }
+  .sio-spark { width: 96px !important; }
+  .sio-seg-btn { padding: 5px 8px; }
+  .sio-seg-key { display: none; }
+  .sio-toast { bottom: 70px; font-size: 10px; }
+}
+
+@media (max-height: 780px) {
+  .sio-cards { max-height: 26vh; }
+  .sio-panel--help .sio-help-body { max-height: 170px; }
+}
+
+/* ------------------------------------------------------------------
+   Reduced motion
+   ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .sio-ui *,
+  .sio-boot *,
+  .sio-gate *,
+  .sio-ui,
+  .sio-boot,
+  .sio-gate {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+  .sio-boot-grid,
+  .sio-gate-grid,
+  .sio-boot-scan,
+  .sio-boot-sweep,
+  .sio-gate-btn-ring {
+    display: none;
+  }
+  .sio-lamp.is-on {
+    background: rgba(255, 59, 48, 0.24);
+  }
+}
+
+/* ------------------------------------------------------------------
+   Forced-colors / high-contrast fallback
+   ------------------------------------------------------------------ */
+
+@media (forced-colors: active) {
+  .sio-panel {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: Canvas;
+    clip-path: none;
+  }
+}

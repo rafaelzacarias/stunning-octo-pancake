@@ -1,0 +1,442 @@
+import * as THREE from 'three';
+import './ui/style.css';
+
+import { LAYOUT, SETTINGS } from './config.js';
+import { Engine } from './core/Engine.js';
+import { PostFX, QUALITY } from './core/PostFX.js';
+import { PhysicsBridge } from './physics/PhysicsBridge.js';
+import { Factory, createStudioEnvironment } from './env/FactoryEnvironment.js';
+import { Shredder, SHAFT_RATIO } from './shredder/Shredder.js';
+import { FragmentManager } from './destruction/FragmentManager.js';
+import { VFXDirector } from './vfx/VFXDirector.js';
+import { CameraDirector, CAMERA_PRESETS } from './camera/CameraDirector.js';
+import { AudioEngine } from './audio/AudioEngine.js';
+import { ControlPanel } from './ui/ControlPanel.js';
+import { getScrapLibrary } from './objects/ScrapLibrary.js';
+import { updateHeatTime } from './materials/HeatShader.js';
+
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+class ShreddingSim {
+  constructor() {
+    this.state = {
+      power: false,
+      reverse: false,
+      conveyor: 0.45,
+      quality: 'high',
+      timeScale: 1,
+      autoFeed: false,
+      audioOn: true,
+      selectedType: 'can',
+      manualQuality: false,
+    };
+    this.load = 0;
+    this.autoFeedTimer = 0;
+    this._raycaster = new THREE.Raycaster();
+    this._pointer = new THREE.Vector2();
+    this._downPos = new THREE.Vector2();
+    this._adaptTimer = 0;
+    this._dynScale = 1;
+    this._grindLevel = 0;
+  }
+
+  async boot() {
+    const container = document.getElementById('app');
+    this.engine = new Engine(container);
+
+    const library = getScrapLibrary();
+    this.ui = new ControlPanel(document.body, {
+      objectTypes: library.map((s) => ({ id: s.id, label: s.label, hint: s.hint, mass: s.mass })),
+      cameraPresets: CAMERA_PRESETS.map((p) => ({ id: p.id, label: p.label, key: p.key })),
+      qualityLevels: [
+        { id: 'low', label: 'Low' }, { id: 'medium', label: 'Medium' },
+        { id: 'high', label: 'High' }, { id: 'ultra', label: 'Ultra' },
+      ],
+      rpmScale: 48,
+    }, this._uiCallbacks());
+    this.ui.setLoadingProgress(0.04, 'Initialising renderer');
+    await nextFrame();
+
+    // ---- environment probe ----
+    this.ui.setLoadingProgress(0.14, 'Baking studio environment');
+    await nextFrame();
+    this.envMap = createStudioEnvironment(this.engine.renderer);
+    this.engine.scene.environment = this.envMap;
+    this.engine.scene.background = new THREE.Color(0x05070a);
+    this.engine.scene.fog = new THREE.FogExp2(0x0a0d12, 0.019);
+
+    // ---- factory ----
+    this.ui.setLoadingProgress(0.3, 'Generating factory textures');
+    await nextFrame();
+    this.factory = new Factory(this.engine.scene, this.state.quality);
+
+    // ---- machine ----
+    this.ui.setLoadingProgress(0.52, 'Machining cutter rotors');
+    await nextFrame();
+    this.shredder = new Shredder(this.engine.scene, this.state.quality);
+
+    // ---- physics ----
+    this.ui.setLoadingProgress(0.66, 'Starting physics worker');
+    await nextFrame();
+    this.physics = new PhysicsBridge();
+    await this.physics.init({ gravity: [0, -9.81, 0], fixedDt: 1 / 60, maxSubSteps: 3 });
+    this.physics.buildStatic([
+      ...this.factory.colliderDescription(),
+      ...this.shredder.colliderDescription(),
+    ]);
+    this.physics.buildShredder({ ...this.shredder.shredderConfig() });
+    this.physics.setConveyor({
+      enabled: true,
+      speed: this.state.conveyor,
+      aabb: {
+        min: [-LAYOUT.conveyor.halfWidth - 0.1, LAYOUT.conveyor.y - 0.05, LAYOUT.conveyor.endZ - 0.2],
+        max: [LAYOUT.conveyor.halfWidth + 0.1, LAYOUT.conveyor.y + 0.9, LAYOUT.conveyor.startZ + 0.3],
+      },
+      dir: [0, 0, -1],
+    });
+
+    // ---- post processing ----
+    this.ui.setLoadingProgress(0.78, 'Compiling post-process chain');
+    await nextFrame();
+    this.postfx = new PostFX(this.engine);
+    this.postfx.toggles.ssr = false;
+
+    // ---- vfx + camera + audio ----
+    this.ui.setLoadingProgress(0.88, 'Priming particle simulation');
+    await nextFrame();
+    this.vfx = new VFXDirector(this.engine.scene, this.engine.renderer, this.state.quality);
+    this.camera = new CameraDirector(this.engine.camera, this.engine.renderer.domElement, this.postfx);
+    this.audio = new AudioEngine();
+
+    this.fragments = new FragmentManager(
+      this.engine.scene, this.physics, this.shredder, this._destructionHooks()
+    );
+    this.fragments.setQuality(this.state.quality);
+
+    this.physics.onContacts = (view, count, stride) => {
+      this.fragments.handleContacts(view, count, stride, this._physDt || 1 / 60);
+    };
+    this.physics.onRemoved = (ids) => this.fragments.onPhysicsRemoved(ids);
+
+    this.engine.onResize = (w, h) => {
+      this.postfx.setSize(w, h);
+      this.camera.onResize();
+    };
+
+    this._bindInput();
+
+    this.ui.setLoadingProgress(0.96, 'Warming shader cache');
+    await nextFrame();
+    this.engine.renderer.compile(this.engine.scene, this.engine.camera);
+    this.postfx.render(1 / 60, 0);
+
+    this.ui.setLoadingProgress(1, 'Ready');
+    await nextFrame();
+    this.ui.hideLoading();
+
+    this.ui.showStartGate(() => this._start());
+    this._loop();
+  }
+
+  async _start() {
+    try {
+      await this.audio.start();
+      this.audio.setMasterVolume(0.72);
+    } catch (e) {
+      this.ui.setNotice('Audio unavailable in this browser', 3000);
+    }
+    // Seed the belt so there is something to watch immediately.
+    this._spawn('can'); this._spawn('can');
+    setTimeout(() => this._spawn('sheet'), 400);
+    setTimeout(() => this._spawn('pipe'), 900);
+    this._setPower(true);
+    this.ui.setPower(true);
+    this.ui.setNotice('Shredder online — feed stock on the right', 2600);
+  }
+
+  /* ------------------------------------------------------------------ hooks */
+
+  _destructionHooks() {
+    return {
+      onSpark: (point, normal, intensity, spec, isTear) => {
+        this.vfx.spark(point, normal, intensity, spec, isTear);
+        if (intensity > 0.35) this.audio.sparkBurst(Math.round(2 + intensity * 8));
+      },
+      onDust: (point, intensity, spec) => this.vfx.dust(point, intensity, spec),
+      onShrapnel: (point, count, spec) => this.vfx.shrapnel(point, count, spec),
+      onGrind: (point, intensity) => {
+        this._grindLevel = Math.max(this._grindLevel, intensity);
+      },
+      onImpact: (point, intensity, hardness) => {
+        this.audio.impact(intensity, hardness);
+        this.vfx.impact(point, intensity);
+        this.camera.addTrauma(intensity * 0.22);
+      },
+      onTear: (point, intensity, spec, kind) => {
+        this.audio.tear(intensity * (0.6 + spec.hardness * 0.5));
+        this.camera.addTrauma(0.1 + intensity * 0.3);
+        if (kind === 'chop') this.audio.impact(intensity * 0.7, spec.hardness);
+      },
+      onDeform: (entry, severity) => {
+        if (severity > 0.5) this.camera.addTrauma(severity * 0.04);
+      },
+    };
+  }
+
+  _uiCallbacks() {
+    return {
+      onPower: (on) => this._setPower(on),
+      onReverse: (on) => {
+        this.state.reverse = on;
+        this.physics?.setShredder({ reverse: on });
+        this.audio?.setReverse(on);
+      },
+      onConveyorSpeed: (v) => {
+        this.state.conveyor = v;
+        this.physics?.setConveyor({ speed: v });
+        this.audio?.setConveyorSpeed(v);
+      },
+      onSpawn: (id) => { this.state.selectedType = id; this._spawn(id); },
+      onSpawnBurst: (id, n) => {
+        this.state.selectedType = id;
+        for (let i = 0; i < n; i++) setTimeout(() => this._spawn(id), i * 130);
+      },
+      onCameraPreset: (id) => this.camera?.apply(id),
+      onQuality: (id) => { this.state.manualQuality = true; this._setQuality(id); },
+      onAudioToggle: (on) => { this.state.audioOn = on; this.audio?.setMuted(!on); },
+      onVolume: (v) => this.audio?.setMasterVolume(v),
+      onClear: () => {
+        this.fragments?.clear();
+        this.ui.setNotice('Debris cleared', 1400);
+      },
+      onToggleSetting: (key, on) => {
+        switch (key) {
+          case 'slowmo':
+            this.state.timeScale = on ? 0.25 : 1;
+            this.physics?.worker.postMessage({ type: 'timeScale', value: this.state.timeScale });
+            break;
+          case 'autoFeed': this.state.autoFeed = on; break;
+          case 'bloom': this.postfx?.setToggle('bloom', on); break;
+          case 'dof': this.postfx?.setToggle('dof', on); break;
+          case 'ssao': this.postfx?.setToggle('gtao', on); break;
+          case 'ssr':
+            this.postfx?.setToggle('ssr', on);
+            if (on) this.ui.setNotice('SSR is expensive — expect a frame-rate cost', 2600);
+            break;
+          default: break;
+        }
+      },
+    };
+  }
+
+  /* ------------------------------------------------------------------ input */
+
+  _bindInput() {
+    const dom = this.engine.renderer.domElement;
+
+    dom.addEventListener('pointerdown', (e) => {
+      this._downPos.set(e.clientX, e.clientY);
+    });
+    dom.addEventListener('pointerup', (e) => {
+      if (e.button !== 0) return;
+      const moved = Math.hypot(e.clientX - this._downPos.x, e.clientY - this._downPos.y);
+      if (moved > 6) return;   // it was an orbit drag
+      this._dropAtPointer(e);
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLInputElement) return;
+      const lib = getScrapLibrary();
+      if (e.code === 'Space') { e.preventDefault(); this._setPower(!this.state.power); this.ui.setPower(this.state.power); }
+      else if (e.code === 'KeyR') { const v = !this.state.reverse; this.state.reverse = v; this.physics.setShredder({ reverse: v }); this.audio.setReverse(v); this.ui.setReverse(v); }
+      else if (e.code === 'KeyC') { this.fragments.clear(); }
+      else if (e.code.startsWith('Digit')) {
+        const n = parseInt(e.code.slice(5), 10);
+        if (n >= 1 && n <= lib.length) { this.state.selectedType = lib[n - 1].id; this._spawn(lib[n - 1].id); }
+      } else if (/^F[1-5]$/.test(e.key)) {
+        e.preventDefault();
+        const p = CAMERA_PRESETS.find((x) => x.key === e.key);
+        if (p) { this.camera.apply(p.id); this.ui.setCameraPreset(p.id); }
+      }
+    });
+  }
+
+  _dropAtPointer(e) {
+    const rect = this.engine.renderer.domElement.getBoundingClientRect();
+    this._pointer.set(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this._raycaster.setFromCamera(this._pointer, this.engine.camera);
+
+    const dropY = LAYOUT.hopper.topY + 0.55;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -dropY);
+    const hit = new THREE.Vector3();
+    if (!this._raycaster.ray.intersectPlane(plane, hit)) return;
+
+    const inHopper = Math.abs(hit.x) < LAYOUT.hopper.topHX && Math.abs(hit.z) < LAYOUT.hopper.topHZ + 0.2;
+    const onBelt = Math.abs(hit.x) < LAYOUT.conveyor.halfWidth + 0.2 &&
+      hit.z > LAYOUT.conveyor.endZ && hit.z < LAYOUT.conveyor.startZ;
+    if (!inHopper && !onBelt) return;
+
+    this._spawnAt(this.state.selectedType, hit);
+  }
+
+  /* ---------------------------------------------------------------- machine */
+
+  _setPower(on) {
+    this.state.power = on;
+    this.physics?.setShredder({ enabled: on, rpm: 42 });
+    this.audio?.setPower(on);
+  }
+
+  _setQuality(id) {
+    if (!QUALITY[id]) return;
+    this.state.quality = id;
+    this.postfx.setQuality(id);
+    this.vfx.setQuality(id);
+    this.fragments.setQuality(id);
+    this.factory.setShadowQuality(id);
+    this.engine.setRenderScale(QUALITY[id].scale * this._dynScale);
+    this.engine.renderer.shadowMap.needsUpdate = true;
+    this.ui.setQuality(id);
+  }
+
+  _spawn(typeId) {
+    const C = LAYOUT.conveyor;
+    const pos = new THREE.Vector3(
+      (Math.random() - 0.5) * (C.halfWidth * 1.1),
+      C.y + 0.28 + Math.random() * 0.1,
+      C.startZ - 0.55 - Math.random() * 0.7
+    );
+    this._spawnAt(typeId, pos);
+  }
+
+  _spawnAt(typeId, pos) {
+    if (this.fragments.entries.size >= SETTINGS.maxScrapBodies) {
+      this.ui.setNotice('Body budget reached — clearing space', 1400);
+    }
+    this.fragments.spawn(typeId, pos, new THREE.Vector3(0, -0.3, -0.15));
+    this.audio?.hydraulicHiss(0.35);
+  }
+
+  /* ------------------------------------------------------------------- loop */
+
+  _loop = () => {
+    requestAnimationFrame(this._loop);
+    const rawDt = this.engine.beginFrame();
+    const dt = rawDt * this.state.timeScale;
+    this._physDt = 1 / 60;
+
+    // physics -> scene graph
+    this.physics.sync(rawDt);
+    this.load = this.physics.load;
+
+    // machine
+    this.shredder.update(dt, this.physics.shredderAngle, this.state.conveyor, this.state.power);
+    this.fragments.rpmNorm = Math.min(1, this.physics.rpm / 42);
+    this.fragments.update(dt, this.engine.elapsed);
+    this.vfx.update(dt);
+    updateHeatTime(this.engine.elapsed);
+
+    // audio bed
+    if (this.audio.isRunning) {
+      this.audio.setThroatLoad(this.load);
+      this.audio.scrape(this._grindLevel);
+      this.audio.update(rawDt, this.engine.camera);
+    }
+    this._grindLevel *= Math.exp(-rawDt * 9);
+
+    // camera + focus
+    this.camera.update(rawDt, this.load);
+
+    // auto feed
+    if (this.state.autoFeed) {
+      this.autoFeedTimer -= dt;
+      if (this.autoFeedTimer <= 0) {
+        this.autoFeedTimer = 0.9 + Math.random() * 1.1;
+        const lib = getScrapLibrary();
+        this._spawn(lib[Math.floor(Math.random() * lib.length)].id);
+      }
+    }
+
+    this.postfx.render(rawDt, this.engine.elapsed);
+    this.engine.endFrame(rawDt);
+
+    this._updateHud(rawDt);
+    this._adaptQuality(rawDt);
+  };
+
+  _updateHud(dt) {
+    this._hudAccum = (this._hudAccum || 0) + dt;
+    if (this._hudAccum < 0.1) return;
+    this._hudAccum = 0;
+    const info = this.engine.renderer.info;
+    this.ui.setStats({
+      fps: this.engine.fps,
+      frameMs: this.engine.frameMs,
+      physicsMs: this.physics.stepMs,
+      bodies: this.physics.registry.size,
+      fragments: this.fragments.stats.fragments,
+      triangles: info.render.triangles,
+      drawCalls: info.render.calls,
+      particles: Math.round(this.vfx.liveEstimate || 0),
+    });
+    this.ui.setLoad(this.load);
+    this.ui.setRPM(Math.min(1, this.physics.rpm / 48));
+  }
+
+  /**
+   * Keep the frame budget. Resolution is sacrificed first because dropping a
+   * quality tier costs SSAO/DoF/AA outright, which is far more visible than a
+   * few percent of pixels. Only when resolution is exhausted do we step down.
+   */
+  _adaptQuality(dt) {
+    if (this.state.manualQuality) return;
+    this._adaptTimer += dt;
+    if (this._adaptTimer < 1.4 || this.engine.elapsed < 5) return;
+    this._adaptTimer = 0;
+
+    const fps = this.engine.medianFps();
+    const order = ['low', 'medium', 'high', 'ultra'];
+    const tier = order.indexOf(this.state.quality);
+    const tierScale = QUALITY[this.state.quality].scale;
+
+    if (fps < 57.5) {
+      if (this._dynScale > 0.66) {
+        this._dynScale = Math.max(0.66, this._dynScale - 0.07);
+        this._applyRenderScale();
+      } else if (tier > 0) {
+        this._dynScale = 0.85;
+        this._setQuality(order[tier - 1]);
+        this._applyRenderScale();
+        this.ui.setNotice(`Performance guard: quality → ${order[tier - 1]}`, 2200);
+      }
+      this.engine._fpsHistory.fill(0);
+    } else if (fps > 58.5 && this._dynScale < 1) {
+      this._dynScale = Math.min(1, this._dynScale + 0.035);
+      this._applyRenderScale();
+    }
+    void tierScale;
+  }
+
+  _applyRenderScale() {
+    this.engine.setRenderScale(QUALITY[this.state.quality].scale * this._dynScale);
+    this.postfx.setSize(window.innerWidth, window.innerHeight);
+  }
+}
+
+const sim = new ShreddingSim();
+sim.boot().catch((err) => {
+  console.error(err);
+  const el = document.getElementById('app');
+  if (el) {
+    el.innerHTML = `<pre style="color:#ff6b6b;font:13px ui-monospace,Menlo,monospace;padding:32px;white-space:pre-wrap">
+Boot failed:
+
+${err && err.stack ? err.stack : err}
+</pre>`;
+  }
+});
+
+if (import.meta.env?.DEV) window.__sim = sim;
