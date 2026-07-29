@@ -190,6 +190,8 @@ class App {
     const dt = Math.min(rawDt, 0.05);
     this._frame++;
 
+    const cpuStart = performance.now();
+
     this.perf.sample(rawDt);
     this.quality.update(rawDt);
 
@@ -214,7 +216,10 @@ class App {
 
     // 6. Camera + effects.
     this.cameraRig.update(dt);
+    this.materials.update(dt);
+    this.environment.update(dt);
     this.postfx.update(dt);
+    this.perf.sampleSim(performance.now() - cpuStart);
 
     this.engine.renderer.info.reset();
     this.postfx.render(dt);
@@ -225,6 +230,7 @@ class App {
     this.perf.extra.bodies = this.physics.bodyCount;
     this.perf.extra.fragments = this.processor.fragmentCount;
     this.perf.extra.sparks = this.vfx.liveSparkCount;
+    this.perf.sampleCpu(performance.now() - cpuStart);
   }
 
   /** Resumes the AudioContext — must happen inside a user gesture. */

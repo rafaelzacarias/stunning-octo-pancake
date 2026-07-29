@@ -21,9 +21,38 @@ export class PerfMonitor {
     this.frameMs95 = 16.7;
     this.worstMs = 16.7;
     this.longFrames = 0;
+    /**
+     * Time spent inside our own update+submit path, excluding the browser's
+     * present/vsync wait. This is the number that transfers between machines,
+     * whereas `frameMs` is capped by the display refresh rate.
+     */
+    this.cpuMs = 0;
+    this._cpuAccum = 0;
+    this._cpuCount = 0;
+    /**
+     * Time spent in simulation + scene updates only (physics sync, destruction,
+     * VFX, audio, camera) with rendering excluded. Unlike `frameMs` this is
+     * independent of the GPU, so it is the number that predicts whether the
+     * simulation itself can sustain 60 FPS on a given CPU.
+     */
+    this.simMs = 0;
+    this._simAccum = 0;
+    this._simCount = 0;
 
     this._sorted = new Float32Array(sampleCount);
     this.extra = { bodies: 0, drawCalls: 0, tris: 0, fragments: 0, sparks: 0 };
+  }
+
+  /** Record the wall time spent producing one frame (ms). */
+  sampleCpu(ms) {
+    this._cpuAccum += ms;
+    this._cpuCount++;
+  }
+
+  /** Record the wall time spent in simulation + scene updates only (ms). */
+  sampleSim(ms) {
+    this._simAccum += ms;
+    this._simCount++;
   }
 
   /** @param {number} dt seconds */
@@ -38,10 +67,22 @@ export class PerfMonitor {
     if (this._emitAccum >= this.emitInterval) {
       this._emitAccum = 0;
       this._recompute();
+      if (this._cpuCount > 0) {
+        this.cpuMs = this._cpuAccum / this._cpuCount;
+        this._cpuAccum = 0;
+        this._cpuCount = 0;
+      }
+      if (this._simCount > 0) {
+        this.simMs = this._simAccum / this._simCount;
+        this._simAccum = 0;
+        this._simCount = 0;
+      }
       bus.emit(EVENTS.STATS, {
         fps: this.fps,
         frameMs: this.frameMs,
         frameMs95: this.frameMs95,
+        cpuMs: this.cpuMs,
+        simMs: this.simMs,
         longFrames: this.longFrames,
         ...this.extra
       });
@@ -78,5 +119,9 @@ export class PerfMonitor {
     this._filled = 0;
     this._cursor = 0;
     this.longFrames = 0;
+    this._cpuAccum = 0;
+    this._cpuCount = 0;
+    this._simAccum = 0;
+    this._simCount = 0;
   }
 }
