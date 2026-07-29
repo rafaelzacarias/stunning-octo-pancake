@@ -1,0 +1,234 @@
+{
+  "url": "http://127.0.0.1:4173/",
+  "startedAt": "2026-07-29T09:12:27.389Z",
+  "note": "Headless SwiftShader: fps/cpuMs are CPU-raster bound. simMs is the GPU-independent number.",
+  "console": [
+    {
+      "type": "warning",
+      "text": "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+    },
+    {
+      "type": "warning",
+      "text": "using deprecated parameters for the initialization function; pass a single object instead"
+    },
+    {
+      "type": "warning",
+      "text": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+    }
+  ],
+  "errors": [],
+  "shots": [
+    {
+      "name": "01-wide-idle",
+      "preset": "wide",
+      "feed": 0,
+      "run": 3,
+      "beauty": true,
+      "pass": "action",
+      "stats": {
+        "fps": 0.1,
+        "frameMs": 10049.6,
+        "frameMs95": 10049.6,
+        "cpuMs": 1710,
+        "simMs": 16.9,
+        "longFrames": 1,
+        "drawCalls": 84,
+        "tris": 12631,
+        "bodies": 14,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "02-wide-shredding",
+      "preset": "wide",
+      "feed": 5,
+      "run": 10,
+      "beauty": true,
+      "pass": "action",
+      "stats": {
+        "fps": 0.38,
+        "frameMs": 2627.67,
+        "frameMs95": 6016.5,
+        "cpuMs": 4.7,
+        "simMs": 1.4,
+        "longFrames": 3,
+        "drawCalls": 104,
+        "tris": 25191,
+        "bodies": 19,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "03-teeth-closeup",
+      "preset": "teeth",
+      "feed": 4,
+      "run": 8,
+      "beauty": true,
+      "pass": "action",
+      "stats": {
+        "fps": 0.68,
+        "frameMs": 1466.6,
+        "frameMs95": 1483.3,
+        "cpuMs": 9.9,
+        "simMs": 4.2,
+        "longFrames": 3,
+        "drawCalls": 90,
+        "tris": 15255,
+        "bodies": 23,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "04-topdown",
+      "preset": "topDown",
+      "feed": 4,
+      "run": 8,
+      "pass": "action",
+      "stats": {
+        "fps": 0.12,
+        "frameMs": 8233,
+        "frameMs95": 8233,
+        "cpuMs": 5.5,
+        "simMs": 0.4,
+        "longFrames": 1,
+        "drawCalls": 98,
+        "tris": 19175,
+        "bodies": 27,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "05-conveyor",
+      "preset": "conveyor",
+      "feed": 3,
+      "run": 6,
+      "pass": "action",
+      "stats": {
+        "fps": 0.65,
+        "frameMs": 1544.4,
+        "frameMs95": 2899.9,
+        "cpuMs": 2.9,
+        "simMs": 1.2,
+        "longFrames": 3,
+        "drawCalls": 96,
+        "tris": 21135,
+        "bodies": 30,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "06-discharge",
+      "preset": "discharge",
+      "feed": 4,
+      "run": 9,
+      "pass": "action",
+      "stats": {
+        "fps": 0.22,
+        "frameMs": 4524.85,
+        "frameMs95": 6149.8,
+        "cpuMs": 6148.9,
+        "simMs": 2.3,
+        "longFrames": 2,
+        "drawCalls": 118,
+        "tris": 28087,
+        "bodies": 34,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "07-castiron-engine",
+      "preset": "teeth",
+      "feed": 2,
+      "run": 9,
+      "type": "engine",
+      "beauty": true,
+      "pass": "action",
+      "stats": {
+        "fps": 0.38,
+        "frameMs": 2649.9,
+        "frameMs95": 4883.1,
+        "cpuMs": 2.3,
+        "simMs": 0.6,
+        "longFrames": 3,
+        "drawCalls": 96,
+        "tris": 17695,
+        "bodies": 36,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "08-beam-shear",
+      "preset": "teeth",
+      "feed": 3,
+      "run": 8,
+      "type": "ibeam",
+      "beauty": true,
+      "pass": "action",
+      "stats": {
+        "fps": 0.25,
+        "frameMs": 4049.9,
+        "frameMs95": 4049.9,
+        "cpuMs": 8.6,
+        "simMs": 6.9,
+        "longFrames": 1,
+        "drawCalls": 102,
+        "tris": 20407,
+        "bodies": 39,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    },
+    {
+      "name": "09-aluminium-cans",
+      "preset": "wide",
+      "feed": 8,
+      "run": 8,
+      "type": "can",
+      "pass": "action",
+      "stats": {
+        "fps": 0.13,
+        "frameMs": 7479.7,
+        "frameMs95": 8366.4,
+        "cpuMs": 1.8,
+        "simMs": 0.3,
+        "longFrames": 0,
+        "drawCalls": 98,
+        "tris": 18495,
+        "bodies": 39,
+        "fragments": 0,
+        "sparks": 0,
+        "quality": "performance"
+      }
+    }
+  ],
+  "stress": {
+    "fps": 0.65,
+    "frameMs": 1535.35,
+    "frameMs95": 1733.3,
+    "cpuMs": 1.8,
+    "simMs": 0.4,
+    "longFrames": 16,
+    "drawCalls": 144,
+    "tris": 35383,
+    "bodies": 47,
+    "fragments": 0,
+    "sparks": 0,
+    "quality": "performance"
+  },
+  "finishedAt": "2026-07-29T09:17:34.135Z"
+}

@@ -1,0 +1,240 @@
+/*
+ * HUD styles for the metal-shredder simulator.
+ * Everything is scoped under `.msx-` so nothing leaks into the boot screen or
+ * other agents' DOM. Colours reuse the CSS custom properties defined in
+ * index.html (--panel, --line, --text, --muted, --hot, --good).
+ */
+
+.msx-hud {
+  position: fixed;
+  inset: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  --msx-amber: #ffb35c;
+  --msx-bad: #ff5a52;
+}
+
+.msx-hud[hidden] { display: none; }
+
+/* ---- generic panel ------------------------------------------------- */
+.msx-panel {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.msx-panel > .msx-body {
+  padding: 12px 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msx-panel--left { top: 14px; left: 14px; width: 268px; }
+.msx-panel--right { top: 14px; right: 14px; width: 234px; }
+
+.msx-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 10px;
+  color: var(--muted);
+  user-select: none;
+}
+.msx-hdr strong { color: var(--text); font-weight: 700; letter-spacing: 0.18em; }
+
+.msx-group { display: flex; flex-direction: column; gap: 8px; }
+.msx-group > .msx-legend {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.msx-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.msx-row--grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+
+/* ---- buttons ------------------------------------------------------- */
+.msx-btn {
+  appearance: none;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  transition: background 140ms ease, border-color 140ms ease, transform 80ms ease;
+  touch-action: manipulation;
+}
+.msx-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.msx-btn:active { transform: translateY(1px); }
+.msx-btn[aria-pressed='true'],
+.msx-btn.msx-on {
+  border-color: rgba(255, 122, 26, 0.6);
+  background: var(--hot-dim);
+  color: #ffd7b0;
+}
+.msx-btn--wide { flex-basis: 100%; }
+
+/* Power button — the hero control. */
+.msx-power {
+  min-height: 56px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.msx-power[aria-pressed='true'] {
+  border-color: var(--good);
+  background: linear-gradient(180deg, rgba(70, 209, 125, 0.22), rgba(70, 209, 125, 0.07));
+  color: #d6ffe6;
+  box-shadow: 0 0 22px rgba(70, 209, 125, 0.28), inset 0 0 12px rgba(70, 209, 125, 0.12);
+}
+.msx-power .msx-led {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #4b1f10; box-shadow: inset 0 0 3px rgba(0,0,0,0.6);
+}
+.msx-power[aria-pressed='true'] .msx-led {
+  background: var(--good);
+  box-shadow: 0 0 8px var(--good);
+}
+
+.msx-btn--danger[aria-pressed='true'] {
+  border-color: rgba(255, 90, 82, 0.6);
+  background: rgba(255, 90, 82, 0.16);
+  color: #ffd0cd;
+}
+
+/* ---- sliders ------------------------------------------------------- */
+.msx-field { display: flex; flex-direction: column; gap: 6px; }
+.msx-field > label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; color: var(--muted); letter-spacing: 0.04em;
+}
+.msx-field .msx-val { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.msx-slider {
+  appearance: none; -webkit-appearance: none;
+  width: 100%; height: 30px; background: transparent; cursor: pointer; margin: 0;
+}
+.msx-slider::-webkit-slider-runnable-track {
+  height: 5px; border-radius: 99px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.msx-slider::-moz-range-track {
+  height: 5px; border-radius: 99px; background: rgba(255, 255, 255, 0.14);
+}
+.msx-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; margin-top: -7px; border-radius: 50%;
+  background: var(--hot); border: 2px solid #1a1206;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.5);
+}
+.msx-slider::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--hot); border: 2px solid #1a1206;
+}
+.msx-slider:focus-visible { outline: none; }
+.msx-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(255,122,26,0.4); }
+
+/* ---- stats HUD ----------------------------------------------------- */
+.msx-stat {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 11px; color: var(--muted); letter-spacing: 0.04em;
+}
+.msx-stat b {
+  color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.msx-stat .msx-fps--good { color: var(--good); }
+.msx-stat .msx-fps--warn { color: var(--msx-amber); }
+.msx-stat .msx-fps--bad { color: var(--msx-bad); }
+
+/* ---- load gauge ---------------------------------------------------- */
+.msx-gauge {
+  height: 12px; border-radius: 99px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.08); position: relative;
+  border: 1px solid var(--line);
+}
+.msx-gauge > i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--good), var(--msx-amber));
+  transition: width 120ms linear, background 200ms ease;
+}
+.msx-gauge.msx-hot > i { background: linear-gradient(90deg, var(--msx-amber), var(--hot)); }
+.msx-gauge.msx-stall > i { background: linear-gradient(90deg, var(--hot), var(--msx-bad)); }
+.msx-gauge-label {
+  display: flex; justify-content: space-between;
+  font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+}
+.msx-gauge-label .msx-stallword { color: var(--msx-bad); font-weight: 700; opacity: 0; }
+.msx-gauge-label.msx-stall .msx-stallword { opacity: 1; }
+
+/* ---- HUD toggle + help -------------------------------------------- */
+.msx-fab {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px;
+}
+.msx-fab .msx-btn { min-width: 44px; flex: 0 0 auto; }
+
+.msx-help {
+  position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  max-width: min(560px, 92vw);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px 16px;
+  padding: 12px 16px;
+}
+.msx-help .msx-key {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; color: var(--muted);
+}
+.msx-help .msx-key kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(255,255,255,0.08); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 6px; color: var(--text); font-size: 10px;
+}
+
+/* ---- focus visibility --------------------------------------------- */
+.msx-hud :focus-visible {
+  outline: 2px solid var(--hot);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---- mobile: collapse side panels into a bottom sheet -------------- */
+@media (max-width: 760px) {
+  .msx-panel--left,
+  .msx-panel--right {
+    top: auto; bottom: 0; left: 0; right: 0; width: auto;
+    max-height: 46vh; overflow-y: auto;
+    border-radius: 14px 14px 0 0;
+    border-bottom: none;
+  }
+  .msx-panel--right { bottom: auto; top: 58px; left: auto; right: 8px; width: 168px; max-height: none; }
+  .msx-help { display: none; }
+  .msx-fab { top: 10px; }
+  .msx-row--grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msx-btn, .msx-gauge > i, .msx-power { transition: none; }
+}
