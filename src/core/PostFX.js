@@ -8,6 +8,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { SSRPass } from 'three/examples/jsm/postprocessing/SSRPass.js';
+import { DEVICE } from './DeviceProfile.js';
 
 /**
  * Final colour-grade: vignette, lateral chromatic aberration, filmic grain and
@@ -82,12 +83,16 @@ const _size = new THREE.Vector2();
 const _rsize = new THREE.Vector2();
 
 export class PostFX {
-  constructor(engine) {
+  constructor(engine, quality = 'high') {
     this.engine = engine;
     this.renderer = engine.renderer;
     this.scene = engine.scene;
     this.camera = engine.camera;
-    this.quality = 'high';
+    // Must be set BEFORE _build(): the constructor used to hardcode 'high',
+    // so a phone built the entire high chain (GTAO + a 4-level bloom mip
+    // pyramid + bokeh + SMAA) at full drawing-buffer size and only shed it
+    // later, if the adaptive guard happened to demote the tier.
+    this.quality = QUALITY[quality] ? quality : 'high';
     this.toggles = { bloom: true, gtao: true, dof: true, ssr: false };
 
     // Last size actually pushed into the chain. setSize() is a no-op unless one
@@ -172,7 +177,9 @@ export class PostFX {
         distanceExponent: 1.6,
         thickness: 0.6,
         scale: 1.15,
-        samples: this.quality === 'ultra' ? 24 : 16,
+        // Multisampled render targets are the single largest renderbuffer in
+        // the chain. 16x at a phone drawing-buffer size is unaffordable.
+        samples: DEVICE.isMobile ? 4 : this.quality === 'ultra' ? 24 : 16,
         distanceFallOff: 1.0,
         screenSpaceRadius: false,
       });

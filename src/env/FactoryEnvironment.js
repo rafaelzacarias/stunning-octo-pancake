@@ -3,6 +3,7 @@ import { LAYOUT } from '../config.js';
 import { createFloorTextureSet, createMetalTextureSet } from '../materials/ProceduralTextures.js';
 import { patchMetalShader } from '../materials/HeatShader.js';
 import { GeometryBatcher } from '../utils/GeometryBatcher.js';
+import { DEVICE } from '../core/DeviceProfile.js';
 
 /**
  * Builds a fully procedural HDR studio/factory environment (no external .hdr
@@ -20,9 +21,11 @@ function areaLightMaterial(intensity, color = 0xffffff) {
 
 /** Shadow map resolution ladder — shared by the initial build and by
  *  setShadowQuality() so a runtime tier change lands on the same value the
- *  lamp would have been built with. */
+ *  lamp would have been built with. Clamped by the device budget: a 4096 map
+ *  is 67 MB of depth texture, which a phone cannot spare even at 'ultra'. */
 function shadowMapSize(quality) {
-  return quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : quality === 'medium' ? 1536 : 1024;
+  const want = quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : quality === 'medium' ? 1536 : 1024;
+  return Math.min(want, DEVICE.shadowMapCap);
 }
 
 function box(w, h, d, mat, x, y, z, rx = 0, ry = 0, rz = 0) {
@@ -120,7 +123,7 @@ export class Factory {
 
   _build(quality) {
     const R = LAYOUT.room;
-    const texSize = quality === 'low' ? 512 : 1024;
+    const texSize = Math.min(quality === 'low' ? 512 : 1024, DEVICE.maxTextureSize);
 
     /* ---- floor ----
      * Repeats are derived from real surface size: the concrete tile covers

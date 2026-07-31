@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createMetalTextureSet } from './ProceduralTextures.js';
+import { DEVICE } from '../core/DeviceProfile.js';
 import { patchMetalShader } from './HeatShader.js';
 
 /**
@@ -385,8 +386,26 @@ export function setEnvironmentMap(envMap) {
   }
 }
 
-function getTextures(spec, quality) {
-  const size = quality === 'low' ? 256 : quality === 'medium' ? 512 : 1024;
+/**
+ * Texture resolution is a DEVICE budget, not a quality-tier setting.
+ *
+ * It used to be `quality === 'low' ? 256 : quality === 'medium' ? 512 : 1024`,
+ * which was wrong twice over. First, every device booted at 'high', so a phone
+ * paid 1024^2 x 5 maps x ~22 materials = 742.9 MB of uploads (995 MB with
+ * mipmaps) and iOS Safari killed the tab. Second, the tier is mutable: the
+ * adaptive guard drops it under load, which built a whole second atlas at the
+ * new size while the old one stayed resident and referenced. Memory pressure
+ * therefore *increased* memory use.
+ *
+ * Pinning it to the immutable device profile fixes both: phones get 256^2
+ * (~39 MB), and switching tiers never reallocates a texture.
+ */
+function textureSizeFor() {
+  return DEVICE.maxTextureSize;
+}
+
+function getTextures(spec) {
+  const size = textureSizeFor();
   // ScrapLibrary lays down 1.4 uv per metre, so the default puts one texture
   // tile every ~20 cm of real surface. Presets whose features have a real
   // physical size (circuit traces, tyre grain, veneer figure) override it.
@@ -399,6 +418,12 @@ function getTextures(spec, quality) {
       seed: hashString(spec.texture),
       repeat,
     });
+    // Anisotropic filtering is per-sample work on a tiled mobile GPU and the
+    // presets ship at 8x. Clamp it to the device budget.
+    const aniso = DEVICE.textureAnisotropy;
+    for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) {
+      if (set[k] && set[k].anisotropy > aniso) set[k].anisotropy = aniso;
+    }
     textureCache.set(key, set);
   }
   return set;
@@ -420,7 +445,7 @@ export function getMetalMaterial(name, quality = 'high') {
   if (cached) return cached;
 
   const spec = MATERIAL_LIBRARY[name] || MATERIAL_LIBRARY.mildSteel;
-  const tex = getTextures(spec, quality);
+  const tex = getTextures(spec);
   const dielectric = !!spec.dielectric;
   const ns = spec.normalScale !== undefined ? spec.normalScale : 0.85;
 
@@ -464,8 +489,9 @@ export function getMetalMaterial(name, quality = 'high') {
     mat.sheenRoughness = spec.sheenRoughness !== undefined ? spec.sheenRoughness : 0.8;
   }
   // Transmission costs a whole extra scene pass, so only the materials that
-  // genuinely have to read as glass opt in, and never at low quality.
-  if (spec.transmission && quality !== 'low') {
+  // genuinely have to read as glass opt in, and never at low quality or on a
+  // phone (where the extra pass is the difference between 30 and 18 fps).
+  if (spec.transmission && quality !== 'low' && DEVICE.allowTransmission) {
     mat.transmission = spec.transmission;
     mat.thickness = spec.thicknessMeters !== undefined ? spec.thicknessMeters : 0.005;
   }

@@ -11,14 +11,23 @@
  * the whole app. The main app already owns one context, so this renderer must
  * be treated as a short-lived batch tool:
  *
- *     const tr = new ThumbnailRenderer({ envMap });
- *     for (const item of items) ui.setThumbnail(item.id, tr.render(item.mesh));
- *     tr.dispose();   // ← calls renderer.dispose() AND forceContextLoss()
+ *     await ThumbnailRenderer.batch({ enabled, envMap }, (tr) => {
+ *       for (const item of items) ui.setThumbnail(item.id, tr.render(item.mesh));
+ *     });
+ *
+ * `batch()` disposes in a `finally`, so the context comes back even if the loop
+ * throws. Doing it by hand (`new` … `tr.dispose()`) leaks the context on a throw.
+ *
+ * On a memory-pressured phone a second context is a crash risk even when it is
+ * legal, so pass `enabled: false` there: no canvas and no context are created
+ * at all and `render()` simply returns null, which callers already handle.
  *
  * Never keep an instance alive across frames, and never create more than one
  * at a time. `dispose()` releases the context immediately via
  * `renderer.dispose()` + `renderer.forceContextLoss()`; relying on GC to
- * reclaim it is not good enough (it can take many seconds).
+ * reclaim it is not good enough (it can take many seconds). A `webglcontextlost`
+ * on the thumbnail canvas aborts the batch: every later `render()` returns null
+ * rather than stalling, and the instance disposes itself on the next tick.
  * ──────────────────────────────────────────────────────────────────────────
  *
  * Notes:
@@ -41,6 +50,10 @@ const FILL = 0.86;         // object occupies ~86 % of the frame
 const AZIMUTH = 35;        // deg — pleasing 3/4 view
 const ELEVATION = 22;      // deg — looking slightly down on the object
 
+/* A 112 px icon gains nothing above 2x, and the backing store is the one
+   allocation this class makes that scales with the device. */
+const MAX_PIXEL_RATIO = 2;
+
 /* scratch objects, allocated once per instance-free module scope */
 const _box = new THREE.Box3();
 const _sphere = new THREE.Sphere();
@@ -58,55 +71,62 @@ export class ThumbnailRenderer {
   /**
    * @param {object}  [options]
    * @param {number}  [options.size=112]        CSS-pixel size of the square icon
-   * @param {number}  [options.pixelRatio=2]    backing-store multiplier
+   * @param {number}  [options.pixelRatio]      backing-store multiplier;
+   *                                            defaults to min(devicePixelRatio, 2)
+   *                                            and is hard-capped at 2
    * @param {THREE.Texture|null} [options.envMap=null]  PMREM env for reflections
+   * @param {boolean} [options.enabled=true]    when false NO second WebGL context
+   *                                            is created and render() returns
+   *                                            null, so callers need no branch
    */
-  constructor({ size = 112, pixelRatio = 2, envMap = null } = {}) {
+  constructor({ size = 112, pixelRatio, envMap = null, enabled = true } = {}) {
     this.size = Math.max(16, Math.round(size) || 112);
-    this.pixelRatio = Math.min(3, Math.max(1, Number(pixelRatio) || 1));
+    const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
+    const wanted = Number(pixelRatio) > 0 ? Number(pixelRatio) : Math.min(dpr, MAX_PIXEL_RATIO);
+    this.pixelRatio = Math.min(MAX_PIXEL_RATIO, Math.max(1, wanted));
+
+    /** Public: false means this instance never touches the GPU. */
+    this.enabled = enabled !== false;
     this.disposed = false;
     this.available = false;
+    this.contextLost = false;
+    /** Public: why thumbnails are unavailable, if they are. */
+    this.reason = this.enabled ? '' : 'disabled by caller';
 
     this.renderer = null;
     this.canvas = null;
     this._envRT = null;
     this._onContextLost = null;
+    this._lostTimer = 0;
 
-    try {
-      this.canvas = document.createElement('canvas');
-      this.renderer = new THREE.WebGLRenderer({
-        canvas: this.canvas,
-        alpha: true,
-        antialias: true,
-        preserveDrawingBuffer: true,
-        premultipliedAlpha: true,
-        powerPreference: 'low-power',
-      });
-      this.renderer.setPixelRatio(this.pixelRatio);
-      this.renderer.setSize(this.size, this.size, false);
-      this.renderer.setClearColor(0x000000, 0);
-      this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.15;
-      this.renderer.shadowMap.enabled = false;
-      this.available = true;
-    } catch (err) {
-      /* No WebGL (blocked, out of contexts, software fallback disabled …).
-         render() will return null and callers keep their text-only cards. */
-      console.warn('[ThumbnailRenderer] WebGL unavailable — thumbnails disabled', err);
-      this.renderer = null;
-      this.available = false;
-    }
+    /* The single most dangerous line in the file: a second live context. Skip it
+       entirely when the caller has told us the device cannot afford one. */
+    if (this.enabled) this._createContext();
 
     if (this.available) {
       this._onContextLost = (e) => {
         if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        /* Abort the batch: every subsequent render() returns null immediately
+           instead of stalling on a dead context, and the GPU-side resources are
+           handed back on the next tick rather than at the caller's convenience. */
+        this.contextLost = true;
         this.available = false;
+        this.reason = 'thumbnail context lost';
+        if (!this._lostTimer) {
+          this._lostTimer = setTimeout(() => { this._lostTimer = 0; this.dispose(); }, 0);
+        }
       };
       this.canvas.addEventListener('webglcontextlost', this._onContextLost, false);
     }
 
-    /* ---- scene rig (built even without WebGL; it costs nothing) ---- */
+    /* ---- scene rig (skipped entirely when disabled: nothing can use it) ---- */
+    if (!this.enabled) {
+      this.scene = null;
+      this.camera = null;
+      this.rig = null;
+      return;
+    }
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(FOV, 1, 0.01, 100);
     /* Feed stock may live on a non-default layer (bloom masks etc.). */
@@ -128,6 +148,35 @@ export class ThumbnailRenderer {
     }
   }
 
+  /**
+   * Borrow a thumbnail renderer for exactly one batch and guarantee the context
+   * is handed back — even if the batch throws. This is the only correct way to
+   * use the class; `new` + manual `dispose()` leaks the context on any throw.
+   *
+   *   const urls = await ThumbnailRenderer.batch({ enabled, envMap }, async (tr) => { … });
+   *
+   * @param {object}   options   constructor options
+   * @param {function(ThumbnailRenderer): any} fn
+   * @returns {Promise<any>} whatever `fn` returned, or null if it threw
+   */
+  static async batch(options, fn) {
+    let tr = null;
+    try {
+      tr = new ThumbnailRenderer(options);
+    } catch (err) {
+      console.warn('[ThumbnailRenderer] construction failed — skipping batch', err);
+      return null;
+    }
+    try {
+      return await fn(tr);
+    } catch (err) {
+      console.warn('[ThumbnailRenderer] batch failed', err);
+      return null;
+    } finally {
+      tr.dispose();
+    }
+  }
+
   /* ================================================================ *
    * Public API
    * ================================================================ */
@@ -135,10 +184,11 @@ export class ThumbnailRenderer {
   /**
    * Render one object to a transparent PNG.
    * @param   {THREE.Object3D} object3D
-   * @returns {string|null} `data:image/png;base64,…` or null on any failure.
+   * @returns {string|null} `data:image/png;base64,…`, or null when disabled,
+   *          when WebGL is unavailable, or on any failure. Never throws.
    */
   render(object3D) {
-    if (this.disposed || !this.available || !this.renderer) return null;
+    if (this.disposed || !this.enabled || !this.available || !this.renderer) return null;
     if (!object3D || !object3D.isObject3D) return null;
 
     let proxy = null;
@@ -174,13 +224,18 @@ export class ThumbnailRenderer {
   }
 
   /**
-   * Release the WebGL context. Safe to call more than once. After this the
+   * Release the WebGL context. Safe to call any number of times. After this the
    * instance is inert and render() returns null.
    */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.available = false;
+
+    if (this._lostTimer) {
+      clearTimeout(this._lostTimer);
+      this._lostTimer = 0;
+    }
 
     if (this._envRT) {
       this._envRT.dispose();
@@ -193,6 +248,55 @@ export class ThumbnailRenderer {
     this.rig = null;
     this.scene = null;
 
+    this._releaseContext();
+  }
+
+  /* ================================================================ *
+   * Internals
+   * ================================================================ */
+
+  /**
+   * Build the second WebGL context. Fails soft: any throw, or a renderer that
+   * came back without a live GL context, leaves `available === false` and the
+   * half-built context is handed straight back to the browser.
+   */
+  _createContext() {
+    try {
+      this.canvas = document.createElement('canvas');
+      this.renderer = new THREE.WebGLRenderer({
+        canvas: this.canvas,
+        alpha: true,
+        antialias: true,
+        preserveDrawingBuffer: true,
+        premultipliedAlpha: true,
+        powerPreference: 'low-power',
+      });
+
+      /* A renderer can construct and still hand back nothing usable when the
+         browser is out of contexts or the GPU process has died. */
+      const gl = typeof this.renderer.getContext === 'function' ? this.renderer.getContext() : null;
+      if (!gl) throw new Error('getContext() returned null');
+
+      this.renderer.setPixelRatio(this.pixelRatio);
+      this.renderer.setSize(this.size, this.size, false);
+      this.renderer.setClearColor(0x000000, 0);
+      this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 1.15;
+      this.renderer.shadowMap.enabled = false;
+      this.available = true;
+    } catch (err) {
+      /* No WebGL (blocked, out of contexts, software fallback disabled …).
+         render() will return null and callers keep their text-only cards. */
+      console.warn('[ThumbnailRenderer] WebGL unavailable — thumbnails disabled', err);
+      this.reason = (err && err.message) ? err.message : 'WebGL unavailable';
+      this.available = false;
+      this._releaseContext();
+    }
+  }
+
+  /** Hand the context back immediately; safe on a partially-built renderer. */
+  _releaseContext() {
     if (this.canvas && this._onContextLost) {
       this.canvas.removeEventListener('webglcontextlost', this._onContextLost, false);
     }
@@ -201,18 +305,18 @@ export class ThumbnailRenderer {
     if (this.renderer) {
       /* Both calls are required: dispose() frees GL objects, forceContextLoss()
          hands the context itself back to the browser straight away. */
-      this.renderer.dispose();
-      if (typeof this.renderer.forceContextLoss === 'function') {
-        this.renderer.forceContextLoss();
+      try {
+        this.renderer.dispose();
+        if (typeof this.renderer.forceContextLoss === 'function') {
+          this.renderer.forceContextLoss();
+        }
+      } catch (err) {
+        console.warn('[ThumbnailRenderer] context release failed', err);
       }
       this.renderer = null;
     }
     this.canvas = null;
   }
-
-  /* ================================================================ *
-   * Internals
-   * ================================================================ */
 
   /** Neutral 3-point studio: key + fill + rim, over a soft ambient base. */
   _buildLights() {

@@ -19,6 +19,9 @@ import { getScrapLibrary, getScrapDef } from './objects/ScrapLibrary.js';
 import { getMetalMaterial } from './materials/MetalMaterial.js';
 import { updateHeatTime, ensureHeatAttributes } from './materials/HeatShader.js';
 import { ThumbnailRenderer } from './ui/ThumbnailRenderer.js';
+import { TouchControls } from './ui/TouchControls.js';
+import { MobileDrawer } from './ui/MobileDrawer.js';
+import { DEVICE, applyDeviceClasses } from './core/DeviceProfile.js';
 
 /**
  * Yield to the browser so the boot overlay can paint between heavy steps.
@@ -44,7 +47,10 @@ class ShreddingSim {
       power: false,
       reverse: false,
       conveyor: 0.45,
-      quality: 'high',
+      // Starting tier comes from the device, not a hardcoded 'high'. Booting a
+      // phone at 'high' was what pinned the texture generator to 1024^2 and
+      // killed the tab before it was ever interactive.
+      quality: DEVICE.tier,
       timeScale: 1,
       autoFeed: false,
       // Audio starts muted: nothing is allowed to make a sound until the user
@@ -62,13 +68,18 @@ class ShreddingSim {
     this._dynScale = 1;
     // Highest tier the guard is allowed to climb back to (index into
     // ['low','medium','high','ultra']). Raised when the user picks a tier.
-    this._qualityCeiling = 2;
+    // Capped at the device tier so the guard cannot climb a phone back up into
+    // a configuration it cannot afford.
+    this._qualityCeiling = ['low', 'medium', 'high', 'ultra'].indexOf(DEVICE.tier);
     this._headroom = 0;
     this._grindLevel = 0;
   }
 
   async boot() {
     const container = document.getElementById('app');
+    // Stamp capability/orientation classes on <html> before the first layout so
+    // the mobile stylesheet applies on the very first paint.
+    applyDeviceClasses();
     this.engine = new Engine(container);
 
     const library = getScrapLibrary();
@@ -128,8 +139,12 @@ class ShreddingSim {
     // ---- post processing ----
     this.ui.setLoadingProgress(0.78, 'Compiling post-process chain');
     await nextFrame();
-    this.postfx = new PostFX(this.engine);
+    this.postfx = new PostFX(this.engine, this.state.quality);
     this.postfx.toggles.ssr = false;
+    // The tier's render scale is part of the tier; without this the composer
+    // runs at full resolution no matter which tier was selected.
+    this.engine.setRenderScale(QUALITY[this.state.quality].scale);
+    this.ui.setQuality(this.state.quality);
 
     // ---- vfx + camera + audio ----
     this.ui.setLoadingProgress(0.88, 'Priming particle simulation');
@@ -163,6 +178,63 @@ class ShreddingSim {
       },
       onReverse: (on) => this._setReverse(on),
     });
+
+    // ---- touch controls ----
+    // Every core action (power, feed, reverse, clear, camera, shop) was
+    // keyboard-only, so on a phone the game was unreachable even once it
+    // stopped crashing.
+    if (DEVICE.isTouch) {
+      this.touch = new TouchControls(document.body, {
+        items: library.map((s) => ({
+          id: s.id, label: s.label, mass: s.mass, value: s.value, category: s.category,
+        })),
+        cameraPresets: CAMERA_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+      }, {
+        onFeed: (id) => { this.state.selectedType = id; this._spawn(id); },
+        onPower: (on) => { this._setPower(on); this.ui.setPower(on); },
+        onReverse: (on) => this._setReverse(on),
+        onJamBuster: () => {
+          const r = this.game.triggerJamBuster();
+          if (!r.ok) this.hud.toast(r.reason === 'cooldown' ? 'Jam-Buster recharging' : 'Already running', 'warn');
+          else this.hud.toast('JAM-BUSTER ENGAGED', 'good');
+        },
+        onShop: () => this.hud.toggleShop?.(),
+        onClear: () => { this.fragments?.clear(); this.ui.setNotice('Debris cleared', 1400); },
+        onCamera: (id) => { this.camera?.apply(id); this.ui.setCameraPreset(id); },
+        onAutoFeed: (on) => { this.state.autoFeed = on; },
+      });
+      this.touch.setSelectedItem(this.state.selectedType);
+    }
+
+    // The desktop side rails are hidden on phones (they collapsed to unusable
+    // ~80px letterboxes scrolling 1500px of content). Settings and telemetry
+    // move into a full-height drawer instead; gameplay lives on the touch bar.
+    //
+    // The drawer's lifetime must track the CSS gate exactly
+    // (`html:is(.sio-mobile, .sio-tablet.sio-portrait)`): a tablet rotated to
+    // landscape goes back to the rail layout, and if the drawer still held the
+    // panels the settings would be unreachable. dispose() restores them to
+    // their original parent and sibling, so rotating is lossless either way.
+    if (DEVICE.isTouch && (DEVICE.isMobile || DEVICE.isTablet)) {
+      this._syncDrawer = () => {
+        const wantDrawer = DEVICE.isMobile || window.innerHeight >= window.innerWidth;
+        if (wantDrawer && !this.drawer) {
+          this.drawer = new MobileDrawer(document.body, {
+            panels: [
+              this.ui.root.querySelector('.sio-col--left'),
+              this.ui.root.querySelector('.sio-col--right'),
+            ],
+            title: 'Settings',
+          });
+        } else if (!wantDrawer && this.drawer) {
+          this.drawer.dispose();
+          this.drawer = null;
+        }
+      };
+      this._syncDrawer();
+      window.addEventListener('resize', this._syncDrawer);
+      window.addEventListener('orientationchange', this._syncDrawer);
+    }
 
     this.fragments = new FragmentManager(
       this.engine.scene, this.physics, this.shredder, this._destructionHooks()
@@ -274,6 +346,7 @@ class ShreddingSim {
     this.physics?.setShredder({ reverse: on });
     this.audio?.setReverse(on);
     this.ui?.setReverse(on);
+    this.touch?.setReverse(on);
   }
 
   _uiCallbacks() {
@@ -415,28 +488,34 @@ class ShreddingSim {
    * frames so the start gate stays responsive while previews stream in.
    */
   async _buildThumbnails() {
-    let tr = null;
-    try {
-      tr = new ThumbnailRenderer({ size: 112, pixelRatio: 2, envMap: this.envMap });
-    } catch (e) {
-      return;   // previews are a nicety; the cards degrade to their monogram
-    }
+    // Skipped entirely on phones: a second WebGL context alongside a
+    // memory-pressured main context risks the browser evicting the OLDEST
+    // context, which is the main simulation renderer. It also forces every
+    // material in the library to be generated up front; leaving it off lets
+    // them stay lazy so only the items actually spawned cost any memory.
+    if (!DEVICE.allowThumbnails) return;
     const items = getScrapLibrary();
-    for (let i = 0; i < items.length; i++) {
-      const def = items[i];
-      let obj = null;
-      try {
-        obj = this._previewObject(def);
-        const url = tr.render(obj);
-        if (url) this.ui.setThumbnail(def.id, url);
-      } catch (e) {
-        /* skip this one, keep the rest */
-      } finally {
-        obj?.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+    // batch() disposes the context in a finally, so a throw inside the loop
+    // cannot leak the second context.
+    await ThumbnailRenderer.batch(
+      { size: 112, pixelRatio: 2, envMap: this.envMap, enabled: true },
+      async (tr) => {
+        for (let i = 0; i < items.length; i++) {
+          const def = items[i];
+          let obj = null;
+          try {
+            obj = this._previewObject(def);
+            const url = tr.render(obj);
+            if (url) this.ui.setThumbnail(def.id, url);
+          } catch (e) {
+            /* skip this one, keep the rest */
+          } finally {
+            obj?.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+          }
+          if ((i & 3) === 3) await nextFrame();
+        }
       }
-      if ((i & 3) === 3) await nextFrame();
-    }
-    tr.dispose();
+    );
   }
 
   /* ---------------------------------------------------------------- machine */
@@ -445,6 +524,7 @@ class ShreddingSim {
     this.state.power = on;
     this.physics?.setShredder({ enabled: on, rpm: 42 });
     this.audio?.setPower(on);
+    this.touch?.setPower(on);
   }
 
   _setQuality(id) {
@@ -564,7 +644,14 @@ class ShreddingSim {
     if (!this.hud) return;
     this.hud.setCash(this.game.cash);
     this.hud.setStrain(this.game.strain, this.game.isStalled);
-    this.hud.setJamBuster(this.game.jamBuster);
+    const jam = this.game.jamBuster;
+    this.hud.setJamBuster(jam);
+    if (this.touch) {
+      // TouchControls wants "how much cooldown is left" (1 = just fired),
+      // GameDirector reports readiness (1 = ready).
+      this.touch.setJamCooldown(1 - jam.cooldown01);
+      this.touch.setStalled(this.game.isStalled);
+    }
 
     this._hudSlow = (this._hudSlow || 0) + 1;
     if (force || this._hudSlow % 12 === 0) {

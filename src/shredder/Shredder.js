@@ -4,6 +4,7 @@ import { LAYOUT } from '../config.js';
 import { createMetalTextureSet } from '../materials/ProceduralTextures.js';
 import { patchMetalShader } from '../materials/HeatShader.js';
 import { GeometryBatcher } from '../utils/GeometryBatcher.js';
+import { DEVICE } from '../core/DeviceProfile.js';
 
 /**
  * Dual-shaft, low-speed / high-torque industrial shredder.
@@ -142,7 +143,7 @@ export class Shredder {  constructor(scene, quality = 'high') {
   _track(t) { this.disposables.push(t); return t; }
 
   _buildMaterials(quality) {
-    const size = quality === 'low' ? 256 : 512;
+    const size = Math.min(quality === 'low' ? 256 : 512, DEVICE.maxTextureSize);
 
     const bladeTex = this._track(createMetalTextureSet('steel', {
       size, seed: 91, repeat: [8, 8], rust: 0.05, scratches: 0.42,
@@ -178,7 +179,7 @@ export class Shredder {  constructor(scene, quality = 'high') {
     });
 
     const frameTex = this._track(createMetalTextureSet('galvanized', {
-      size: Math.min(size, 512), seed: 5, repeat: [6, 6],
+      size, seed: 5, repeat: [6, 6],
     }));
     this.frameMaterial = new THREE.MeshPhysicalMaterial({
       map: frameTex.map, normalMap: frameTex.normalMap,

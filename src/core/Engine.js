@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { DEVICE } from './DeviceProfile.js';
 
 /**
  * Engine — renderer, scene, camera and frame-timing spine.
@@ -17,7 +18,11 @@ export class Engine {
       logarithmicDepthBuffer: false,
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    // A phone panel is dense enough that 1.5x is indistinguishable from 3x,
+    // and every full-screen render target scales with the SQUARE of this
+    // number. At DPR 3 the composer chain alone would cost 4x what it does
+    // at 1.5 for no perceptible gain.
+    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, DEVICE.maxPixelRatio);
     this.renderScale = 1;
     this.renderer.setPixelRatio(this.maxPixelRatio);
 
@@ -57,8 +62,26 @@ export class Engine {
     this._onResize = () => this.resize();
     window.addEventListener('resize', this._onResize);
 
-    this._onContextLost = (e) => { e.preventDefault(); this.contextLost = true; };
+    // Mobile browsers drop the WebGL context routinely — on memory pressure,
+    // on backgrounding, on a GPU process restart. Without preventDefault() the
+    // context can never come back, and without a restore handler the app is a
+    // permanently black canvas. Both halves are required.
+    this.contextLost = false;
+    this.onContextRestored = null;
+    this._onContextLost = (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+    };
+    this._onContextRestored = () => {
+      this.contextLost = false;
+      // Everything GPU-side was destroyed with the context. three re-uploads
+      // geometry, textures and programs lazily, but the render targets and
+      // sizes have to be re-pushed explicitly.
+      this.resize();
+      this.onContextRestored?.();
+    };
     this.renderer.domElement.addEventListener('webglcontextlost', this._onContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this._onContextRestored);
   }
 
   get size() {
@@ -115,6 +138,7 @@ export class Engine {
   dispose() {
     window.removeEventListener('resize', this._onResize);
     this.renderer.domElement.removeEventListener('webglcontextlost', this._onContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this._onContextRestored);
     this.renderer.dispose();
   }
 }

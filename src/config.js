@@ -3,6 +3,7 @@
  * audio positioning all derive from these numbers so nothing can drift apart.
  * Units: metres, kilograms, seconds.
  */
+import { DEVICE } from './core/DeviceProfile.js';
 export const LAYOUT = {
   // --- shredder ---
   shaftY: 1.10,             // height of both shaft centre-lines
@@ -43,13 +44,15 @@ export const LAYOUT = {
 };
 
 export const SETTINGS = {
-  maxFragments: 120,
-  maxSlicesPerFrame: 3,
+  // Simulation budgets scale with the device: a phone core cannot step 110
+  // Rapier bodies plus 120 sliced fragments inside a 16 ms frame.
+  maxFragments: DEVICE.maxFragments,
+  maxSlicesPerFrame: DEVICE.isMobile ? 2 : 3,
   minFragmentVolume: 2.4e-5,   // m^3 — below this it becomes shrapnel/particles
-  fragmentLifetime: 26,        // seconds before quiet cleanup
-  maxScrapBodies: 110,
-  sparkCapacity: 16384,
-  dustCapacity: 4096,
+  fragmentLifetime: DEVICE.isMobile ? 16 : 26,  // seconds before quiet cleanup
+  maxScrapBodies: DEVICE.maxScrapBodies,
+  sparkCapacity: DEVICE.particleCapacity,
+  dustCapacity: DEVICE.dustCapacity,
   // Fragments with a bounding radius under this stop casting shadows: they
   // are visually irrelevant but each one costs a full shadow-map draw.
   shadowCasterMinRadius: 0.055,

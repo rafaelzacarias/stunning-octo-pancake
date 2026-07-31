@@ -260,27 +260,241 @@ void main() {
 }
 `;
 
+/**
+ * WebGL1 fallback vertex shader. Identical billboard/stretch maths to
+ * RENDER_VS, but the per-particle state arrives as instanced attributes fed by
+ * the CPU simulation instead of being fetched from a float render target
+ * (WebGL1 has neither MRT nor guaranteed vertex texture fetch). RENDER_FS is
+ * shared verbatim, so the shading is pixel-identical.
+ */
+const CPU_RENDER_VS = /* glsl */`
+precision highp float;
+attribute vec3 iPos;
+attribute vec4 iVel;
+attribute float iLife;
+uniform float uSizeScale;
+uniform float uStretch;
+uniform vec2 uViewport;
+
+varying vec2 vQuad;
+varying float vLife;
+varying float vType;
+varying float vSeed;
+varying float vSpeed;
+
+void main() {
+  vQuad = uv;
+  vLife = iLife;
+  vType = floor(iVel.w + 0.5);
+  vSeed = fract(iVel.w);
+  vSpeed = length(iVel.xyz);
+
+  if (iLife <= 0.0) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // cull offscreen
+    return;
+  }
+
+  vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
+
+  float size = uSizeScale * (0.005 + vSeed * 0.005);
+  float stretch = 1.0;
+  if (vType < 0.5) {
+    size *= 0.42;
+    stretch = clamp(vSpeed * uStretch, 1.0, 6.0);   // motion-streaked spark
+  } else if (vType < 1.5) {
+    size *= 1.9;
+    stretch = clamp(vSpeed * uStretch * 0.25, 1.0, 3.0);
+  } else if (vType < 2.5) {
+    size *= 5.5 + (1.0 - clamp(vLife, 0.0, 1.0)) * 9.0;  // dust puffs expand
+  } else {
+    size *= 1.15;
+    stretch = clamp(vSpeed * uStretch * 0.4, 1.0, 4.0);
+  }
+
+  vec3 velView = (viewMatrix * vec4(iVel.xyz, 0.0)).xyz;
+  vec2 dir = normalize(velView.xy + vec2(1e-5, 1e-5));
+  vec2 right = vec2(dir.y, -dir.x);
+
+  vec2 corner = position.xy;
+  mv.xy += right * (corner.x * size) + dir * (corner.y * size * stretch);
+
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+/** Which simulation backend the instance actually ended up on. */
+export const PMODE = { GPU: 'gpu', CPU: 'cpu', OFF: 'off' };
+
+/** Particles the CPU fallback will carry unless the caller overrides it. */
+const CPU_DEFAULT_CAPACITY = 2048;
+
+/* Collision geometry, mirrored from the SIM_FS uniforms so both backends agree. */
+const DECK = { y: 0.094, halfX: 3.7, centerZ: 0.6, halfZ: 3.7 };
+const FLOOR_Y = 0.0;
+const GRAVITY_Y = -9.81;
+
+function nextPow2(n) {
+  let p = 8;
+  while (p < n) p *= 2;
+  return p;
+}
+
+/**
+ * Resolve a requested particle count to a power-of-two state-texture side plus
+ * the ring size actually used. The side is rounded *up* to a power of two (NPOT
+ * float targets are a portability hazard) while the ring stays at the requested
+ * count, so existing quality tiers keep their exact particle budget.
+ */
+function resolveSize(cap) {
+  const wanted = Math.min(1 << 20, Math.max(64, Math.floor(cap) || 0));
+  const side = nextPow2(Math.ceil(Math.sqrt(wanted)));
+  return { side, capacity: Math.min(wanted, side * side) };
+}
+
+/**
+ * Is the renderer's *existing* context really WebGL2?
+ *
+ * `renderer.capabilities.isWebGL2` is checked first because that is the
+ * documented flag, but on three >= r163 it is a hardcoded `true` kept only for
+ * backwards compatibility, so it cannot be trusted on its own. The live context
+ * is therefore inspected as well — reading `renderer.getContext()` costs
+ * nothing, whereas creating a probe canvas would risk evicting the main
+ * renderer's context (browsers cap live contexts at ~8-16 and drop the oldest).
+ *
+ * @param {THREE.WebGLRenderer} renderer
+ * @returns {boolean} true only if MRT + GLSL ES 3.0 are actually available
+ */
+function hasWebGL2(renderer) {
+  try {
+    if (!renderer || !renderer.capabilities || renderer.capabilities.isWebGL2 === false) return false;
+    const gl = typeof renderer.getContext === 'function' ? renderer.getContext() : null;
+    if (!gl) return false;
+    if (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext) return true;
+    /* Non-standard/proxied contexts: fall back to probing for WebGL2 core
+       entry points that simply do not exist on a WebGL1 context. */
+    return typeof gl.drawBuffers === 'function' && typeof gl.texStorage2D === 'function';
+  } catch (err) {
+    return false;
+  }
+}
+
 export class GPUParticles {
+  /**
+   * @param {THREE.WebGLRenderer} renderer
+   * @param {object}  [options]
+   * @param {number}  [options.capacity=16384]       particle ring size (GPU path)
+   * @param {number}  [options.maxEmitPerFrame=2400] spawn ceiling per frame
+   * @param {number}  [options.cpuCapacity=2048]     ring size for the WebGL1 CPU path
+   * @param {boolean} [options.cpuFallback=true]     allow the CPU path at all
+   * @param {string}  [options.quality]              initial setQuality() tier
+   */
   constructor(renderer, options = {}) {
     this.renderer = renderer;
-    const cap = options.capacity || 16384;
-    this.side = Math.max(8, Math.ceil(Math.sqrt(cap)));
-    this.capacity = this.side * this.side;
     this.cursor = 0;
     this.time = 0;
+    this.emitCount = 0;
+    this.count = 0;            // live particles (CPU path only)
+    this.spawnedTotal = 0;     // lifetime spawn counter — cheap telemetry
+    this.disposed = false;
 
-    const hasFloat = renderer.capabilities.isWebGL2 &&
-      renderer.extensions.has('EXT_color_buffer_float');
-    this.dataType = hasFloat ? THREE.FloatType : THREE.HalfFloatType;
+    /** Public: false means every method is a safe no-op. */
+    this.enabled = false;
+    /** Public: 'gpu' | 'cpu' | 'off'. */
+    this.mode = PMODE.OFF;
+    /** Public: human-readable explanation when degraded. */
+    this.reason = '';
+
+    this.maxEmit = Math.max(1, Math.floor(options.maxEmitPerFrame || 2400));
+    const req = resolveSize(options.capacity || 16384);
+    this.side = req.side;
+    this.capacity = req.capacity;
+
+    this._sizeScale = 1;
+    this._intensity = 1;
+    this.dataType = THREE.HalfFloatType;
+    this.rtA = this.rtB = null;
+    this.simScene = this.simCamera = this.simMaterial = this.simMesh = null;
+    this.emitScene = this.emitPoints = this.emitMaterial = this.emitGeometry = null;
+    this.renderMaterial = null;
+    this.mesh = null;
+
+    /* Detect WebGL2 from the live renderer. Probing with a throwaway context is
+       NOT an option: browsers cap live contexts at ~8-16 and evicting one takes
+       the main simulation renderer down with it. */
+    if (hasWebGL2(renderer)) {
+      this._tryInit(PMODE.GPU, () => this._initGPU());
+    } else {
+      this.reason = 'WebGL2 unavailable (no MRT / GLSL ES 3.0)';
+    }
+
+    if (!this.enabled && options.cpuFallback !== false) {
+      this._tryInit(PMODE.CPU, () => this._initCPU(options));
+    }
+
+    if (!this.enabled) this._initOff();
+
+    if (options.quality) this.setQuality(options.quality);
+  }
+
+  /* ================================================================ *
+   * Backend selection
+   * ================================================================ */
+
+  _tryInit(mode, build) {
+    try {
+      build();
+      this.mode = mode;
+      this.enabled = true;
+    } catch (err) {
+      console.warn(`[GPUParticles] "${mode}" backend unavailable — degrading`, err);
+      this.reason = (err && err.message) ? err.message : String(err);
+      this._releaseGL();
+      this.enabled = false;
+      this.mode = PMODE.OFF;
+    }
+  }
+
+  _initGPU() {
+    this.dataType = this.renderer.extensions.has('EXT_color_buffer_float')
+      ? THREE.FloatType
+      : THREE.HalfFloatType;
 
     this.rtA = this._makeTarget();
     this.rtB = this._makeTarget();
 
     this._buildSim();
-    this._buildEmit(options.maxEmitPerFrame || 2400);
+    this._buildEmit(this.maxEmit);
     this._buildRender();
 
     this._clearTargets();
+  }
+
+  _initCPU(options) {
+    /* Instancing is core in WebGL2 and an extension in WebGL1. Without it there
+       is no cheap way to draw the quads at all, so bail to the inert backend. */
+    if (!hasWebGL2(this.renderer) && !this.renderer.extensions.has('ANGLE_instanced_arrays')) {
+      throw new Error('instanced arrays unavailable');
+    }
+    const want = resolveSize(Math.min(
+      this.capacity,
+      options.cpuCapacity || CPU_DEFAULT_CAPACITY
+    ));
+    this.side = want.side;
+    this.capacity = want.capacity;
+
+    this._allocCPU();
+    this._buildCPURender();
+  }
+
+  /** Inert backend: keeps a real Object3D so scene.add/remove still work. */
+  _initOff() {
+    this.mode = PMODE.OFF;
+    this.enabled = false;
+    if (!this.mesh) {
+      this.mesh = new THREE.Group();
+      this.mesh.name = 'GPUParticles(disabled)';
+    }
+    if (!this.reason) this.reason = 'particle system disabled';
   }
 
   _makeTarget() {
@@ -369,14 +583,21 @@ export class GPUParticles {
     this.emitScene.add(this.emitPoints);
   }
 
-  _buildRender() {
+  /** Instanced unit quad shared by both backends. */
+  _makeQuadGeometry() {
     const base = new THREE.PlaneGeometry(1, 1);
     const geo = new THREE.InstancedBufferGeometry();
     geo.index = base.index;
     geo.attributes.position = base.attributes.position;
     geo.attributes.uv = base.attributes.uv;
     geo.attributes.normal = base.attributes.normal;
+    base.dispose();
+    return geo;
+  }
 
+  /** GPU path geometry: one instance per state texel. */
+  _makeRefGeometry() {
+    const geo = this._makeQuadGeometry();
     const refs = new Float32Array(this.capacity * 2);
     for (let i = 0; i < this.capacity; i++) {
       refs[i * 2] = ((i % this.side) + 0.5) / this.side;
@@ -384,20 +605,27 @@ export class GPUParticles {
     }
     geo.setAttribute('aRef', new THREE.InstancedBufferAttribute(refs, 2));
     geo.instanceCount = this.capacity;
-    base.dispose();
+    return geo;
+  }
 
-    this.renderMaterial = new THREE.ShaderMaterial({
-      vertexShader: RENDER_VS,
+  _renderUniforms() {
+    return {
+      uPos: { value: null },
+      uVel: { value: null },
+      uSizeScale: { value: 1.0 },
+      uStretch: { value: 0.026 },
+      uIntensity: { value: 1.0 },
+      uTime: { value: 0 },
+      uViewport: { value: new THREE.Vector2(1, 1) },
+    };
+  }
+
+  /* Blending/depth setup is identical for both backends so the look matches. */
+  _makeRenderMaterial(vertexShader) {
+    return new THREE.ShaderMaterial({
+      vertexShader,
       fragmentShader: RENDER_FS,
-      uniforms: {
-        uPos: { value: this.rtA.textures[0] },
-        uVel: { value: this.rtA.textures[1] },
-        uSizeScale: { value: 1.0 },
-        uStretch: { value: 0.026 },
-        uIntensity: { value: 1.0 },
-        uTime: { value: 0 },
-        uViewport: { value: new THREE.Vector2(1, 1) },
-      },
+      uniforms: this._renderUniforms(),
       transparent: true,
       depthWrite: false,
       depthTest: true,
@@ -407,11 +635,185 @@ export class GPUParticles {
       blendEquation: THREE.AddEquation,
       toneMapped: false,
     });
+  }
+
+  _buildRender() {
+    const geo = this._makeRefGeometry();
+
+    this.renderMaterial = this._makeRenderMaterial(RENDER_VS);
+    this.renderMaterial.uniforms.uPos.value = this.rtA.textures[0];
+    this.renderMaterial.uniforms.uVel.value = this.rtA.textures[1];
 
     this.mesh = new THREE.Mesh(geo, this.renderMaterial);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 20;
     this.mesh.name = 'GPUParticles';
+  }
+
+  /* ================================================================ *
+   * CPU fallback backend (WebGL1)
+   * ================================================================ */
+
+  _allocCPU() {
+    const n = this.capacity;
+    this.count = 0;
+    this.cursor = 0;
+    this.cpuPos = new Float32Array(n * 3);
+    this.cpuVel = new Float32Array(n * 4);
+    this.cpuLife = new Float32Array(n);
+  }
+
+  /** Bind (or rebind) the state arrays as instanced attributes. */
+  _bindCPUAttributes(geo) {
+    this.iPos = new THREE.InstancedBufferAttribute(this.cpuPos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.iVel = new THREE.InstancedBufferAttribute(this.cpuVel, 4).setUsage(THREE.DynamicDrawUsage);
+    this.iLife = new THREE.InstancedBufferAttribute(this.cpuLife, 1).setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('iPos', this.iPos);
+    geo.setAttribute('iVel', this.iVel);
+    geo.setAttribute('iLife', this.iLife);
+    geo.instanceCount = 0;
+  }
+
+  _buildCPURender() {
+    const geo = this._makeQuadGeometry();
+    this._bindCPUAttributes(geo);
+
+    this.renderMaterial = this._makeRenderMaterial(CPU_RENDER_VS);
+
+    this.mesh = new THREE.Mesh(geo, this.renderMaterial);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 20;
+    this.mesh.name = 'GPUParticles(cpu)';
+  }
+
+  /** Append one particle, recycling the oldest slot once the ring is full. */
+  _spawnCPU(px, py, pz, vx, vy, vz, vw, life) {
+    let i;
+    if (this.count < this.capacity) {
+      i = this.count++;
+    } else {
+      i = this.cursor;
+      this.cursor = (this.cursor + 1) % this.capacity;
+    }
+    this.cpuPos[i * 3] = px;
+    this.cpuPos[i * 3 + 1] = py;
+    this.cpuPos[i * 3 + 2] = pz;
+    this.cpuVel[i * 4] = vx;
+    this.cpuVel[i * 4 + 1] = vy;
+    this.cpuVel[i * 4 + 2] = vz;
+    this.cpuVel[i * 4 + 3] = vw;
+    this.cpuLife[i] = life;
+  }
+
+  /** Move the last live particle into slot `i` (swap-remove compaction). */
+  _killCPU(i, last) {
+    if (i === last) return;
+    this.cpuPos[i * 3] = this.cpuPos[last * 3];
+    this.cpuPos[i * 3 + 1] = this.cpuPos[last * 3 + 1];
+    this.cpuPos[i * 3 + 2] = this.cpuPos[last * 3 + 2];
+    this.cpuVel[i * 4] = this.cpuVel[last * 4];
+    this.cpuVel[i * 4 + 1] = this.cpuVel[last * 4 + 1];
+    this.cpuVel[i * 4 + 2] = this.cpuVel[last * 4 + 2];
+    this.cpuVel[i * 4 + 3] = this.cpuVel[last * 4 + 3];
+    this.cpuLife[i] = this.cpuLife[last];
+  }
+
+  /**
+   * JS mirror of SIM_FS: same per-type ballistics, same layered ground planes,
+   * same skitter and cheek bounce. Only live particles are integrated, and they
+   * are kept contiguous so the instance count tracks the live population.
+   */
+  _updateCPU(dt) {
+    const h = Math.min(dt, 1 / 30);
+    const P = this.cpuPos, V = this.cpuVel, L = this.cpuLife;
+    const C = LAYOUT.conveyor;
+    const beltY = C.y + C.beltThickness * 0.5;
+    const beltHalfX = C.halfWidth;
+    const beltMinZ = C.endZ;
+    const beltMaxZ = C.startZ;
+
+    let n = this.count;
+    for (let i = 0; i < n;) {
+      const p3 = i * 3, v4 = i * 4;
+      const vw = V[v4 + 3];
+      const typ = Math.floor(vw + 0.5);
+      const seed = vw - Math.floor(vw);
+
+      let drag, gscale, rest, tangential;
+      if (typ < 1) { drag = 3.6; gscale = 1.0; rest = 0.34; tangential = 0.55; }
+      else if (typ < 2) { drag = 0.85; gscale = 1.0; rest = 0.40; tangential = 0.72; }
+      else if (typ < 3) { drag = 5.4; gscale = 0.10; rest = 0.02; tangential = 0.9; }
+      else { drag = 2.1; gscale = 0.35; rest = 0.30; tangential = 0.6; }
+
+      let vx = V[v4], vy = V[v4 + 1], vz = V[v4 + 2];
+      let life = L[i];
+
+      vy += GRAVITY_Y * gscale * h;
+      const damp = Math.exp(-drag * h);
+      vx *= damp; vy *= damp; vz *= damp;
+
+      const isDust = typ === 2;
+      if (isDust) {
+        vy += 0.35 * h;
+        vx += Math.sin(this.time * 1.7 + seed * 31.0) * 0.09 * h;
+        vz += Math.cos(this.time * 1.3 + seed * 17.0) * 0.09 * h;
+      }
+
+      const py0 = P[p3 + 1];
+      let nx = P[p3] + vx * h;
+      let ny = py0 + vy * h;
+      let nz = P[p3 + 2] + vz * h;
+
+      let ground = FLOOR_Y;
+      if (Math.abs(nx) < DECK.halfX && Math.abs(nz - DECK.centerZ) < DECK.halfZ) ground = DECK.y;
+      if (Math.abs(nx) < beltHalfX && nz > beltMinZ && nz < beltMaxZ && py0 >= beltY - 0.02) {
+        ground = Math.max(ground, beltY);
+      }
+
+      if (ny < ground && vy < 0) {
+        ny = ground + 0.0006;
+        vy = -vy * rest;
+        vx *= tangential;
+        vz *= tangential;
+        const skitter = 0.55 * (1 - rest);
+        vx += (Math.random() - 0.5) * skitter;
+        vz += (Math.random() - 0.5) * skitter;
+        life -= (typ < 1) ? 0.14 : 0.05;
+        if (isDust) life -= 0.35;
+      }
+
+      const ax = Math.abs(nx);
+      if (ax > 0.62 && ax < 0.78 && ny > 0.9 && ny < 1.6 && Math.abs(nz) < 0.9) {
+        vx = -vx * 0.4;
+        nx = Math.min(0.62, Math.max(-0.62, nx)) + Math.sign(nx) * 0.001;
+      }
+
+      life -= h;
+
+      if (life <= 0) {
+        n--;
+        this._killCPU(i, n);
+        continue;   // re-test the swapped-in particle at this index
+      }
+
+      P[p3] = nx; P[p3 + 1] = ny; P[p3 + 2] = nz;
+      V[v4] = vx; V[v4 + 1] = vy; V[v4 + 2] = vz;
+      L[i] = life;
+      i++;
+    }
+    this.count = n;
+    this.emitCount = 0;
+
+    this.mesh.geometry.instanceCount = n;
+    if (n > 0) {
+      this.iPos.addUpdateRange(0, n * 3);
+      this.iVel.addUpdateRange(0, n * 4);
+      this.iLife.addUpdateRange(0, n);
+      this.iPos.needsUpdate = true;
+      this.iVel.needsUpdate = true;
+      this.iLife.needsUpdate = true;
+    }
+    this.renderMaterial.uniforms.uTime.value = this.time;
   }
 
   _clearTargets() {
@@ -436,6 +838,8 @@ export class GPUParticles {
    * @param {object} o  { type, speed, speedVar, spread, life, lifeVar, jitter }
    */
   emit(origin, dir, count, o = {}) {
+    if (!this.enabled || !(count > 0)) return;
+
     const type = o.type ?? PTYPE.SPARK;
     const speed = o.speed ?? 5.5;
     const speedVar = o.speedVar ?? 0.7;
@@ -453,14 +857,10 @@ export class GPUParticles {
     ux /= ul; uy /= ul; uz /= ul;
     const vx = dy * uz - dz * uy, vy = dz * ux - dx * uz, vz = dx * uy - dy * ux;
 
+    const cpu = this.mode === PMODE.CPU;
+
     for (let i = 0; i < count; i++) {
       if (this.emitCount >= this.maxEmit) return;
-      const k = this.emitCount++;
-      const slot = this.cursor;
-      this.cursor = (this.cursor + 1) % this.capacity;
-
-      this.emitClip[k * 2] = ((slot % this.side) + 0.5) / this.side * 2 - 1;
-      this.emitClip[k * 2 + 1] = (Math.floor(slot / this.side) + 0.5) / this.side * 2 - 1;
 
       // Cone sampling, biased toward the axis so the jet reads as directional.
       const theta = Math.random() * Math.PI * 2;
@@ -472,21 +872,50 @@ export class GPUParticles {
 
       const sp = speed * (1 - speedVar + Math.random() * speedVar * 2);
 
-      this.emitPos[k * 3] = origin.x + (Math.random() - 0.5) * jitter;
-      this.emitPos[k * 3 + 1] = origin.y + (Math.random() - 0.5) * jitter;
-      this.emitPos[k * 3 + 2] = origin.z + (Math.random() - 0.5) * jitter;
+      const px = origin.x + (Math.random() - 0.5) * jitter;
+      const py = origin.y + (Math.random() - 0.5) * jitter;
+      const pz = origin.z + (Math.random() - 0.5) * jitter;
 
-      this.emitVel[k * 4] = (cx / cl) * sp;
-      this.emitVel[k * 4 + 1] = (cy / cl) * sp;
-      this.emitVel[k * 4 + 2] = (cz / cl) * sp;
-      this.emitVel[k * 4 + 3] = type + Math.min(0.999, Math.random());
+      const evx = (cx / cl) * sp;
+      const evy = (cy / cl) * sp;
+      const evz = (cz / cl) * sp;
+      const packed = type + Math.min(0.999, Math.random());
+      const lf = life * (1 - lifeVar + Math.random() * lifeVar * 2);
 
-      this.emitLife[k] = life * (1 - lifeVar + Math.random() * lifeVar * 2);
+      this.emitCount++;
+      this.spawnedTotal++;
+
+      if (cpu) {
+        this._spawnCPU(px, py, pz, evx, evy, evz, packed, lf);
+        continue;
+      }
+
+      const k = this.emitCount - 1;
+      const slot = this.cursor;
+      this.cursor = (this.cursor + 1) % this.capacity;
+
+      this.emitClip[k * 2] = ((slot % this.side) + 0.5) / this.side * 2 - 1;
+      this.emitClip[k * 2 + 1] = (Math.floor(slot / this.side) + 0.5) / this.side * 2 - 1;
+
+      this.emitPos[k * 3] = px;
+      this.emitPos[k * 3 + 1] = py;
+      this.emitPos[k * 3 + 2] = pz;
+
+      this.emitVel[k * 4] = evx;
+      this.emitVel[k * 4 + 1] = evy;
+      this.emitVel[k * 4 + 2] = evz;
+      this.emitVel[k * 4 + 3] = packed;
+
+      this.emitLife[k] = lf;
     }
   }
 
   update(dt) {
+    if (!this.enabled) { this.emitCount = 0; return; }
     this.time += dt;
+
+    if (this.mode === PMODE.CPU) { this._updateCPU(dt); return; }
+
     const r = this.renderer;
     const prevTarget = r.getRenderTarget();
     const prevAutoClear = r.autoClear;
@@ -532,18 +961,129 @@ export class GPUParticles {
 
   setQuality(q) {
     const scale = q === 'low' ? 0.8 : q === 'medium' ? 0.9 : 1.0;
-    this.renderMaterial.uniforms.uSizeScale.value = scale;
-    this.renderMaterial.uniforms.uIntensity.value = q === 'low' ? 0.8 : 1.0;
+    this._sizeScale = scale;
+    this._intensity = q === 'low' ? 0.8 : 1.0;
+    if (!this.renderMaterial) return;
+    this.renderMaterial.uniforms.uSizeScale.value = this._sizeScale;
+    this.renderMaterial.uniforms.uIntensity.value = this._intensity;
   }
 
-  dispose() {
+  /**
+   * Resize the particle budget at runtime (phones want far less than desktop).
+   * The mesh node identity is preserved, so anything that already added
+   * `particles.mesh` to a scene keeps working.
+   * @param   {number} n requested particle count
+   * @returns {number} the capacity actually in effect
+   */
+  setCapacity(n) {
+    if (this.disposed) return this.capacity;
+
+    const want = resolveSize(n);
+    if (!this.enabled) {
+      this.side = want.side;
+      this.capacity = want.capacity;
+      return this.capacity;
+    }
+    if (want.side === this.side && want.capacity === this.capacity) return this.capacity;
+
+    try {
+      if (this.mode === PMODE.GPU) this._resizeGPU(want);
+      else this._resizeCPU(want);
+    } catch (err) {
+      console.warn('[GPUParticles] setCapacity failed — disabling', err);
+      this.reason = (err && err.message) ? err.message : String(err);
+      this._releaseGL({ keepNode: true });
+      this._initOff();
+    }
+    return this.capacity;
+  }
+
+  _resizeGPU(want) {
     this.rtA.dispose();
     this.rtB.dispose();
-    this.simMaterial.dispose();
-    this.simMesh.geometry.dispose();
-    this.emitMaterial.dispose();
-    this.emitGeometry.dispose();
-    this.renderMaterial.dispose();
-    this.mesh.geometry.dispose();
+    this.side = want.side;
+    this.capacity = want.capacity;
+    this.rtA = this._makeTarget();
+    this.rtB = this._makeTarget();
+
+    const old = this.mesh.geometry;
+    this.mesh.geometry = this._makeRefGeometry();
+    old.dispose();
+
+    this.renderMaterial.uniforms.uPos.value = this.rtA.textures[0];
+    this.renderMaterial.uniforms.uVel.value = this.rtA.textures[1];
+
+    this.cursor = 0;
+    this.emitCount = 0;
+    this._clearTargets();
+  }
+
+  _resizeCPU(want) {
+    this.side = want.side;
+    this.capacity = want.capacity;
+    this._allocCPU();
+
+    /* Swap the whole geometry rather than just rebinding: geometry.dispose() is
+       what actually deletes the old GL buffers, and the mesh node survives. */
+    const old = this.mesh.geometry;
+    const geo = this._makeQuadGeometry();
+    this._bindCPUAttributes(geo);
+    this.mesh.geometry = geo;
+    old.dispose();
+
+    this.emitCount = 0;
+  }
+
+  /**
+   * Release every GL resource this instance owns: both render targets (and the
+   * MRT textures they own), every material, every geometry and the CPU state
+   * buffers. Tolerant of partially-built state so it is safe from a failed init.
+   * @param {object}  [opts]
+   * @param {boolean} [opts.keepNode=false] keep `mesh` alive (stripped + hidden)
+   *   so a late `scene.remove(particles.mesh)` still targets the right node.
+   */
+  _releaseGL({ keepNode = false } = {}) {
+    /* WebGLRenderTarget.dispose() releases every texture in `textures`, which
+       is how the MRT colour attachments are freed. */
+    this.rtA?.dispose();
+    this.rtB?.dispose();
+    this.rtA = this.rtB = null;
+
+    this.simMaterial?.dispose();
+    this.simMesh?.geometry?.dispose();
+    this.simScene?.clear();
+    this.simScene = this.simMesh = this.simMaterial = this.simCamera = null;
+
+    this.emitMaterial?.dispose();
+    this.emitGeometry?.dispose();
+    this.emitScene?.clear();
+    this.emitScene = this.emitPoints = this.emitMaterial = this.emitGeometry = null;
+
+    this.renderMaterial?.dispose();
+    this.renderMaterial = null;
+
+    if (this.mesh && this.mesh.isMesh) {
+      this.mesh.geometry?.dispose();
+      this.mesh.removeFromParent();
+      this.mesh.visible = false;
+    }
+    if (!keepNode) this.mesh = null;
+
+    this.iPos = this.iVel = this.iLife = null;
+    this.cpuPos = this.cpuVel = this.cpuLife = null;
+    this.emitClip = this.emitPos = this.emitVel = this.emitLife = null;
+    this.aClip = this.aPos = this.aVel = this.aLife = null;
+    this.count = 0;
+    this.emitCount = 0;
+  }
+
+  /** Idempotent. After this the instance is inert and every method no-ops. */
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.enabled = false;
+    this._releaseGL({ keepNode: true });
+    this.mode = PMODE.OFF;
+    this.reason = 'disposed';
   }
 }
