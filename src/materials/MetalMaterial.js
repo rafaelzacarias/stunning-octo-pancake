@@ -263,6 +263,114 @@ export const MATERIAL_LIBRARY = {
     hardness: 0.95, sparkYield: 0.0, heatCapacity: 0.4,
     shatter: 0.9, fragmentScale: 0.35,
   },
+
+  /* --------------------------------------- housewares / tools / office */
+
+  /* Decorative chrome plate over steel: toaster shells, chair columns,
+   * wrench flats. Bright enough that the roughness floor has to be held at
+   * 0.24 — at 0.16 the scratch texels reach mirror polish and the surface
+   * breaks out in white specular confetti. */
+  chrome: {
+    texture: 'chrome',
+    textureRepeat: [3.2, 3.2],
+    density: 7800,
+    roughness: 0.25, metalness: 1.0,
+    anisotropy: 0.3, anisotropyRotation: 0,
+    envMapIntensity: 1.45,
+    tint: 0xeef2f6,
+    clearcoat: 0.3, clearcoatRoughness: 0.14,
+    normalScale: 0.7, roughnessFloor: 0.24, scorch: 1.0,
+    yieldImpulse: 380, shearImpulse: 1200, ductility: 0.55,
+    hardness: 0.85, sparkYield: 1.3, heatCapacity: 0.95,
+    shatter: 0.15, fragmentScale: 0.9,
+  },
+  /* Nichrome heating element ribbon. Thin, already embrittled by a few
+   * thousand thermal cycles, so it lets go early and comes apart into short
+   * lengths rather than folding. */
+  nichrome: {
+    texture: 'nichrome',
+    textureRepeat: [4.0, 4.0],
+    density: 8400,
+    roughness: 0.52, metalness: 1.0,
+    anisotropy: 0.35, anisotropyRotation: Math.PI * 0.5,
+    envMapIntensity: 0.85,
+    tint: 0x9d968c,
+    normalScale: 1.0, roughnessFloor: 0.2, scorch: 1.0,
+    yieldImpulse: 220, shearImpulse: 700, ductility: 0.35,
+    hardness: 0.7, sparkYield: 0.9, heatCapacity: 0.6,
+    shatter: 0.35, fragmentScale: 0.5,
+  },
+  /* Enamelled magnet wire wound on a stator. Mechanically it behaves like
+   * a rope of soft copper: it necks, stretches and drags off the core in
+   * long strands, and it barely sparks at all. */
+  copperWinding: {
+    texture: 'copperWinding',
+    textureRepeat: [3.6, 3.6],
+    density: 8900,
+    roughness: 0.29, metalness: 1.0,
+    anisotropy: 0.7, anisotropyRotation: Math.PI * 0.5,
+    envMapIntensity: 1.2,
+    tint: 0xc98a4e,
+    clearcoat: 0.22, clearcoatRoughness: 0.3,
+    normalScale: 0.95, roughnessFloor: 0.18, scorch: 1.0,
+    yieldImpulse: 170, shearImpulse: 500, ductility: 0.95,
+    hardness: 0.28, sparkYield: 0.1, heatCapacity: 0.5,
+    shatter: 0.02, fragmentScale: 0.8,
+  },
+  /* Brittle white/beige injection moulding: garden furniture, keycaps,
+   * castors, appliance end caps. The most explosive material in the
+   * library — it bursts into a cloud of small sharp shards, hence the
+   * 0.22 fragment floor that keeps those shards alive as real bodies. */
+  hardPlastic: {
+    texture: 'hardPlastic',
+    textureRepeat: [4.0, 4.0],
+    density: 1150,
+    dielectric: true,
+    roughness: 0.42, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.95,
+    tint: 0xffffff,
+    clearcoat: 0.2, clearcoatRoughness: 0.42,
+    normalScale: 0.95, roughnessFloor: 0.16, scorch: 0.3,
+    yieldImpulse: 190, shearImpulse: 450, ductility: 0.12,
+    hardness: 0.4, sparkYield: 0.0, heatCapacity: 0.22,
+    shatter: 0.9, fragmentScale: 0.22,
+  },
+  /* Upholstery / mesh weave. The single toughest thing here in shear: the
+   * weave stretches, necks and wraps the teeth before it finally tears, and
+   * it never shatters, never sparks and never keeps a crease. */
+  fabric: {
+    texture: 'fabric',
+    textureRepeat: [3.0, 3.0],
+    density: 400,
+    dielectric: true,
+    roughness: 0.86, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.5,
+    tint: 0xffffff,
+    sheen: 0.85, sheenRoughness: 0.75,
+    normalScale: 1.2, roughnessFloor: 0.3, scorch: 0.3,
+    yieldImpulse: 620, shearImpulse: 1500, ductility: 0.99,
+    hardness: 0.05, sparkYield: 0.0, heatCapacity: 0.25,
+    shatter: 0.0, fragmentScale: 1.0,
+  },
+  /* Solid timber tool handle. Splits along the grain: it barely bends, and
+   * once a tooth is in it the whole handle lets go in long splinters. */
+  wood: {
+    texture: 'wood',
+    textureRepeat: [2.0, 1.2],
+    density: 700,
+    dielectric: true,
+    roughness: 0.48, metalness: 0.0,
+    anisotropy: 0,
+    envMapIntensity: 0.75,
+    tint: 0xffffff,
+    clearcoat: 0.15, clearcoatRoughness: 0.5,
+    normalScale: 1.0, roughnessFloor: 0.18, scorch: 0.3,
+    yieldImpulse: 300, shearImpulse: 800, ductility: 0.2,
+    hardness: 0.3, sparkYield: 0.0, heatCapacity: 0.2,
+    shatter: 0.5, fragmentScale: 0.55,
+  },
 };
 
 const materialCache = new Map();

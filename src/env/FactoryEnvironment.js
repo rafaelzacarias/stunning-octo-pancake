@@ -18,6 +18,13 @@ function areaLightMaterial(intensity, color = 0xffffff) {
   return mat;
 }
 
+/** Shadow map resolution ladder — shared by the initial build and by
+ *  setShadowQuality() so a runtime tier change lands on the same value the
+ *  lamp would have been built with. */
+function shadowMapSize(quality) {
+  return quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : quality === 'medium' ? 1536 : 1024;
+}
+
 function box(w, h, d, mat, x, y, z, rx = 0, ry = 0, rz = 0) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.position.set(x, y, z);
@@ -290,10 +297,30 @@ export class Factory {
       g.add(light, light.target);
       if (shadow) {
         light.castShadow = true;
-        light.shadow.mapSize.set(quality === 'ultra' ? 4096 : 2048, quality === 'ultra' ? 4096 : 2048);
-        light.shadow.camera.near = 0.6;
-        light.shadow.camera.far = 22;
-        light.shadow.bias = -0.0009;
+        const size = shadowMapSize(quality);
+        light.shadow.mapSize.set(size, size);
+        /* The shadow camera is bound to the machine, not to the room.
+         *
+         * near: the fixture hangs at y = R.height - 1.62 (6.78 m) and the
+         *   closest real caster along the light axis is stock riding the belt
+         *   at ~2.3 m; the hopper mouth is ~5 m down. 1.6 m leaves margin and
+         *   buys ~2.7x the depth resolution that 0.6 m did.
+         * far: three's SpotLightShadow overwrites camera.far with
+         *   `light.distance` on every update, so the only way to shorten it is
+         *   to shorten the light's range — which would visibly change the
+         *   falloff across the floor. Left at the light's 26 m on purpose.
+         * focus: fov is derived as light.angle * focus. The full 129 deg cone
+         *   spends most of its texels on bare floor; 0.85 keeps the deck, the
+         *   hopper and the loaded half of the belt inside the map at ~2.2x the
+         *   texel density. What falls outside is only ever lit at <15% by the
+         *   spot's penumbra, so no shadow visibly pops.
+         */
+        light.shadow.camera.near = 1.6;
+        light.shadow.focus = 0.85;
+        // With the tighter frustum the depth values are accurate enough for a
+        // small constant bias; normalBias does the heavy lifting against acne
+        // on the near-tangent surfaces (deck plate, hopper walls).
+        light.shadow.bias = -0.0005;
         light.shadow.normalBias = 0.022;
         light.shadow.radius = 2.2;
       }
@@ -425,12 +452,25 @@ export class Factory {
   }
 
   setShadowQuality(quality) {
-    const size = quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : quality === 'medium' ? 1536 : 1024;
-    if (this.keyLight?.castShadow) {
-      this.keyLight.shadow.mapSize.set(size, size);
-      this.keyLight.shadow.map?.dispose();
-      this.keyLight.shadow.map = null;
+    const size = shadowMapSize(quality);
+    const shadow = this.keyLight?.shadow;
+    if (!shadow || !this.keyLight.castShadow) return;
+    if (shadow.mapSize.width === size && shadow.mapSize.height === size) return;
+
+    shadow.mapSize.set(size, size);
+    // The old map is a live framebuffer + texture. dispose() fires the event
+    // WebGLTextures listens for, which deletes both immediately; dropping the
+    // reference without it would leak one FBO per quality change. The renderer
+    // reallocates at the new size because the reference is null.
+    if (shadow.map) {
+      shadow.map.dispose();
+      shadow.map = null;
     }
+    if (shadow.mapPass) {
+      shadow.mapPass.dispose();
+      shadow.mapPass = null;
+    }
+    shadow.needsUpdate = true;
   }
 
   dispose() {

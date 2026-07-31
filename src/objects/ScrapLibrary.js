@@ -822,6 +822,960 @@ function buildMicrowaveTurntable() {
   return mergeParts(parts);
 }
 
+/* ------------------------------------------------ 5. kitchen & housewares */
+
+/**
+ * Blender jug: a closed lathe profile (floor, up the outside, over the rim,
+ * back down the inside, across the floor) so the shell encloses the glass
+ * wall only and `computeVolume` returns the mass of glass, not of air.
+ */
+function buildBlenderJug() {
+  const prof = [
+    [0.000, -0.094], [0.056, -0.094], [0.062, -0.088], [0.072, -0.034],
+    [0.084, 0.048], [0.090, 0.096], [0.082, 0.096], [0.077, 0.048],
+    [0.065, -0.030], [0.055, -0.080], [0.000, -0.080],
+  ];
+  const parts = [new THREE.LatheGeometry(prof.map((p) => new THREE.Vector2(p[0], p[1])), 22)];
+  const handle = new THREE.TorusGeometry(0.05, 0.0085, 6, 12, Math.PI * 1.15);
+  handle.rotateZ(-Math.PI * 0.575);
+  handle.translate(0.078, 0.014, 0);
+  parts.push(handle);
+  const spout = new THREE.BoxGeometry(0.03, 0.02, 0.032);
+  spout.rotateZ(0.34);
+  spout.translate(-0.084, 0.09, 0);
+  parts.push(spout);
+  const collar = new THREE.TorusGeometry(0.086, 0.003, 4, 20);
+  collar.rotateX(Math.PI / 2);
+  collar.translate(0, 0.074, 0);
+  parts.push(collar);
+  return mergeParts(parts);
+}
+
+function buildBlenderLid() {
+  const parts = [];
+  const disc = new THREE.CylinderGeometry(0.086, 0.09, 0.012, 20);
+  parts.push(disc);
+  const skirt = new THREE.CylinderGeometry(0.092, 0.092, 0.014, 20);
+  skirt.translate(0, -0.011, 0);
+  parts.push(skirt);
+  const cap = new THREE.CylinderGeometry(0.024, 0.028, 0.014, 12);
+  cap.translate(0, 0.012, 0);
+  parts.push(cap);
+  const tab = new THREE.BoxGeometry(0.028, 0.009, 0.018);
+  tab.translate(0.096, 0.003, 0);
+  parts.push(tab);
+  return mergeParts(parts);
+}
+
+function buildBlenderBase() {
+  const parts = [];
+  const body = new THREE.CylinderGeometry(0.07, 0.094, 0.15, 18);
+  parts.push(body);
+  const collar = new THREE.CylinderGeometry(0.062, 0.062, 0.018, 18);
+  collar.translate(0, 0.082, 0);
+  parts.push(collar);
+  const panel = new THREE.BoxGeometry(0.072, 0.054, 0.012);
+  panel.translate(0, -0.018, 0.079);
+  parts.push(panel);
+  for (let i = 0; i < 3; i++) {
+    const btn = new THREE.CylinderGeometry(0.009, 0.009, 0.008, 10);
+    btn.rotateX(Math.PI / 2);
+    btn.translate(-0.022 + i * 0.022, -0.018, 0.087);
+    parts.push(btn);
+  }
+  for (let i = 0; i < 4; i++) {
+    const foot = new THREE.CylinderGeometry(0.012, 0.014, 0.01, 8);
+    foot.translate((i % 2 ? 1 : -1) * 0.055, -0.079, (i < 2 ? 1 : -1) * 0.055);
+    parts.push(foot);
+  }
+  return mergeParts(parts);
+}
+
+function buildBlenderBlade() {
+  const parts = [];
+  const hub = new THREE.CylinderGeometry(0.014, 0.016, 0.026, 12);
+  parts.push(hub);
+  const shaft = new THREE.CylinderGeometry(0.007, 0.007, 0.054, 10);
+  shaft.translate(0, -0.032, 0);
+  parts.push(shaft);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const blade = new THREE.BoxGeometry(0.05, 0.0018, 0.013);
+    blade.rotateZ(i < 2 ? 0.34 : -0.34);
+    blade.rotateY(-a);
+    blade.translate(Math.cos(a) * 0.03, i < 2 ? 0.006 : -0.006, -Math.sin(a) * 0.03);
+    parts.push(blade);
+  }
+  const nut = new THREE.CylinderGeometry(0.01, 0.01, 0.008, 6);
+  nut.translate(0, 0.016, 0);
+  parts.push(nut);
+  return mergeParts(parts);
+}
+
+/** Universal motor: stator can, two end windings, armature shaft, fan. */
+function buildMotorCan(radius, length, segments) {
+  const parts = [];
+  const can = new THREE.CylinderGeometry(radius, radius, length, segments);
+  parts.push(can);
+  for (const sy of [-1, 1]) {
+    const winding = new THREE.TorusGeometry(radius * 0.8, radius * 0.28, 6, segments);
+    winding.rotateX(Math.PI / 2);
+    winding.translate(0, sy * length * 0.5, 0);
+    parts.push(winding);
+  }
+  const shaft = new THREE.CylinderGeometry(radius * 0.16, radius * 0.16, length * 1.45, 8);
+  parts.push(shaft);
+  const fan = new THREE.CylinderGeometry(radius * 0.84, radius * 0.84, length * 0.09, 12);
+  fan.translate(0, -length * 0.63, 0);
+  parts.push(fan);
+  return mergeParts(parts);
+}
+
+function buildToasterShell() {
+  const W = 0.26, H = 0.19, D = 0.164, t = 0.0035;
+  const parts = [];
+  for (const sz of [-1, 1]) {
+    const face = new THREE.BoxGeometry(W, H, t, 5, 4, 1);
+    face.translate(0, 0, sz * (D / 2 - t / 2));
+    parts.push(face);
+  }
+  // Top deck: three strips framing the two bread slots, plus the end lands.
+  const deckY = H / 2 - t / 2;
+  for (const spec of [[W, 0.03, 0.066], [W, 0.036, 0], [W, 0.03, -0.066]]) {
+    const strip = new THREE.BoxGeometry(spec[0], t, spec[1]);
+    strip.translate(0, deckY, spec[2]);
+    parts.push(strip);
+  }
+  for (const sx of [-1, 1]) {
+    const land = new THREE.BoxGeometry(0.06, t, D);
+    land.translate(sx * (W / 2 - 0.03), deckY, 0);
+    parts.push(land);
+  }
+  const pan = new THREE.BoxGeometry(W, t, D);
+  pan.translate(0, -H / 2 + t / 2, 0);
+  parts.push(pan);
+  // carriage lever slot surround and the crumb-tray lip
+  const slot = new THREE.BoxGeometry(0.014, 0.11, 0.006);
+  slot.translate(0.088, 0.01, D / 2);
+  parts.push(slot);
+  const tray = new THREE.BoxGeometry(W - 0.02, 0.012, 0.006);
+  tray.translate(0, -H / 2 + 0.016, D / 2);
+  parts.push(tray);
+  for (let i = 0; i < 4; i++) {
+    const foot = new THREE.CylinderGeometry(0.009, 0.011, 0.008, 8);
+    foot.translate((i % 2 ? 1 : -1) * 0.1, -H / 2 - 0.004, (i < 2 ? 1 : -1) * 0.055);
+    parts.push(foot);
+  }
+  return mergeParts(parts);
+}
+
+function buildToasterEnds() {
+  const parts = [];
+  for (const sx of [-1, 1]) {
+    const cap = new THREE.BoxGeometry(0.012, 0.192, 0.166, 1, 4, 4);
+    cap.translate(sx * 0.136, 0, 0);
+    parts.push(cap);
+  }
+  const lever = new THREE.BoxGeometry(0.03, 0.016, 0.012);
+  lever.translate(0.088, 0.055, 0.088);
+  parts.push(lever);
+  const stem = new THREE.BoxGeometry(0.012, 0.09, 0.006);
+  stem.translate(0.088, 0.014, 0.086);
+  parts.push(stem);
+  const dial = new THREE.CylinderGeometry(0.016, 0.018, 0.014, 12);
+  dial.rotateX(Math.PI / 2);
+  dial.translate(0.088, -0.05, 0.088);
+  parts.push(dial);
+  return mergeParts(parts);
+}
+
+/** Nichrome ribbon zig-zagged across mica boards — four element planes. */
+function buildToasterElements() {
+  const parts = [];
+  for (const z of [-0.052, -0.017, 0.017, 0.052]) {
+    const board = new THREE.BoxGeometry(0.2, 0.13, 0.0016);
+    board.translate(0, 0, z);
+    parts.push(board);
+    for (let i = 0; i < 6; i++) {
+      const wire = new THREE.BoxGeometry(0.204, 0.0026, 0.0034);
+      wire.translate(0, -0.05 + i * 0.02, z + 0.0025);
+      parts.push(wire);
+    }
+    for (const sx of [-1, 1]) {
+      const rail = new THREE.BoxGeometry(0.004, 0.13, 0.005);
+      rail.translate(sx * 0.102, 0, z);
+      parts.push(rail);
+    }
+  }
+  return mergeParts(parts);
+}
+
+function buildSmallBoard(w, h, seedComponents) {
+  const parts = [];
+  const board = new THREE.BoxGeometry(w, h, 0.0016, 4, 3, 1);
+  parts.push(board);
+  for (let i = 0; i < seedComponents; i++) {
+    const t = i / seedComponents;
+    if (i % 3 === 0) {
+      const cap = new THREE.CylinderGeometry(0.007, 0.007, 0.016, 8);
+      cap.rotateX(Math.PI / 2);
+      cap.translate(-w * 0.4 + t * w * 0.8, h * 0.22, 0.0088);
+      parts.push(cap);
+    } else if (i % 3 === 1) {
+      const ic = new THREE.BoxGeometry(0.018, 0.01, 0.003);
+      ic.translate(-w * 0.4 + t * w * 0.8, -h * 0.1, 0.0023);
+      parts.push(ic);
+    } else {
+      const relay = new THREE.BoxGeometry(0.014, 0.014, 0.012);
+      relay.translate(-w * 0.4 + t * w * 0.8, -h * 0.3, 0.0068);
+      parts.push(relay);
+    }
+  }
+  const header = new THREE.BoxGeometry(w * 0.3, 0.007, 0.008);
+  header.translate(0, h * 0.42, 0.0048);
+  parts.push(header);
+  return mergeParts(parts);
+}
+
+function buildCoffeeShell() {
+  const parts = [];
+  // reservoir tower behind, brew basket housing in front
+  const tower = new THREE.BoxGeometry(0.17, 0.3, 0.14, 3, 5, 3);
+  tower.translate(0, 0.03, -0.055);
+  parts.push(tower);
+  const head = new THREE.BoxGeometry(0.17, 0.07, 0.15);
+  head.translate(0, 0.152, 0.035);
+  parts.push(head);
+  const plinth = new THREE.BoxGeometry(0.17, 0.05, 0.24);
+  plinth.translate(0, -0.145, 0.02);
+  parts.push(plinth);
+  const basket = new THREE.CylinderGeometry(0.058, 0.05, 0.05, 14);
+  basket.translate(0, 0.09, 0.04);
+  parts.push(basket);
+  const lidPanel = new THREE.BoxGeometry(0.16, 0.012, 0.13);
+  lidPanel.translate(0, 0.186, -0.055);
+  parts.push(lidPanel);
+  const gauge = new THREE.BoxGeometry(0.03, 0.2, 0.008);
+  gauge.translate(0.06, 0.03, 0.016);
+  parts.push(gauge);
+  const rocker = new THREE.BoxGeometry(0.03, 0.016, 0.008);
+  rocker.translate(-0.05, -0.14, 0.142);
+  parts.push(rocker);
+  return mergeParts(parts);
+}
+
+function buildCarafe() {
+  const prof = [
+    [0.000, -0.072], [0.056, -0.072], [0.062, -0.066], [0.07, -0.02],
+    [0.074, 0.05], [0.078, 0.078], [0.07, 0.078], [0.067, 0.05],
+    [0.063, -0.016], [0.055, -0.058], [0.000, -0.058],
+  ];
+  const parts = [new THREE.LatheGeometry(prof.map((p) => new THREE.Vector2(p[0], p[1])), 20)];
+  const handle = new THREE.TorusGeometry(0.042, 0.008, 6, 12, Math.PI * 1.2);
+  handle.rotateZ(-Math.PI * 0.6);
+  handle.translate(0.07, 0.01, 0);
+  parts.push(handle);
+  const lid = new THREE.CylinderGeometry(0.066, 0.07, 0.014, 18);
+  lid.translate(0, 0.083, 0);
+  parts.push(lid);
+  const knob = new THREE.CylinderGeometry(0.014, 0.018, 0.012, 10);
+  knob.translate(0, 0.094, 0);
+  parts.push(knob);
+  return mergeParts(parts);
+}
+
+function buildHotPlate() {
+  const parts = [];
+  const plate = new THREE.CylinderGeometry(0.078, 0.078, 0.006, 20);
+  parts.push(plate);
+  const rim = new THREE.TorusGeometry(0.076, 0.004, 4, 20);
+  rim.rotateX(Math.PI / 2);
+  rim.translate(0, 0.003, 0);
+  parts.push(rim);
+  const element = new THREE.TorusGeometry(0.05, 0.0055, 5, 18);
+  element.rotateX(Math.PI / 2);
+  element.translate(0, -0.006, 0);
+  parts.push(element);
+  const bracket = new THREE.BoxGeometry(0.09, 0.014, 0.05);
+  bracket.translate(0, -0.012, -0.05);
+  parts.push(bracket);
+  return mergeParts(parts);
+}
+
+/** Copper feed loop: a chain of closed tube segments so the volume is real. */
+function buildCopperTubing() {
+  const parts = [];
+  const R = 0.075;
+  for (let i = 0; i < 9; i++) {
+    const a = -0.35 + (i / 8) * Math.PI * 1.15;
+    const seg = new THREE.CylinderGeometry(0.0065, 0.0065, 0.036, 8);
+    seg.rotateZ(a);
+    seg.translate(Math.cos(a) * R, Math.sin(a) * R, 0);
+    parts.push(seg);
+  }
+  const riser = new THREE.CylinderGeometry(0.0065, 0.0065, 0.13, 8);
+  riser.translate(-0.072, 0.03, 0);
+  parts.push(riser);
+  for (const sy of [-1, 1]) {
+    const union = new THREE.CylinderGeometry(0.009, 0.009, 0.012, 8);
+    union.translate(-0.072, sy * 0.07 + 0.03, 0);
+    parts.push(union);
+  }
+  return mergeParts(parts);
+}
+
+function buildVacuumBody() {
+  const parts = [];
+  const barrel = new THREE.CylinderGeometry(0.13, 0.13, 0.26, 20);
+  barrel.rotateZ(Math.PI / 2);
+  parts.push(barrel);
+  for (const sx of [-1, 1]) {
+    const dome = new THREE.SphereGeometry(0.13, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+    dome.scale(1, 0.42, 1);
+    dome.rotateZ(sx * Math.PI / 2);
+    dome.translate(sx * 0.13, 0, 0);
+    parts.push(dome);
+  }
+  const handle = new THREE.TorusGeometry(0.06, 0.012, 6, 14, Math.PI);
+  handle.rotateY(Math.PI / 2);
+  handle.translate(0, 0.13, 0);
+  parts.push(handle);
+  const inlet = new THREE.CylinderGeometry(0.03, 0.034, 0.05, 12);
+  inlet.rotateZ(Math.PI / 2);
+  inlet.translate(0.17, 0.03, 0);
+  parts.push(inlet);
+  const latch = new THREE.BoxGeometry(0.03, 0.05, 0.02);
+  latch.translate(0.02, -0.005, 0.13);
+  parts.push(latch);
+  // plastic castor wheels
+  for (let i = 0; i < 4; i++) {
+    const wheel = new THREE.CylinderGeometry(0.028, 0.028, 0.016, 10);
+    wheel.rotateX(Math.PI / 2);
+    wheel.translate((i % 2 ? 1 : -1) * 0.09, -0.115, (i < 2 ? 1 : -1) * 0.075);
+    parts.push(wheel);
+  }
+  return mergeParts(parts);
+}
+
+function buildVacuumHose() {
+  const parts = [];
+  const R = 0.155;
+  for (let i = 0; i < 10; i++) {
+    const a = -0.25 + (i / 9) * Math.PI * 1.05;
+    const seg = new THREE.CylinderGeometry(0.024, 0.024, 0.055, 10);
+    seg.rotateZ(a);
+    seg.translate(Math.cos(a) * R, Math.sin(a) * R, 0);
+    parts.push(seg);
+    if (i % 2 === 0) {
+      const rib = new THREE.TorusGeometry(0.026, 0.005, 5, 10);
+      rib.rotateX(Math.PI / 2);
+      rib.rotateZ(a);
+      rib.translate(Math.cos(a) * R, Math.sin(a) * R, 0);
+      parts.push(rib);
+    }
+  }
+  for (const a of [-0.25, Math.PI * 1.05 - 0.25]) {
+    const cuff = new THREE.CylinderGeometry(0.03, 0.03, 0.04, 10);
+    cuff.rotateZ(a);
+    cuff.translate(Math.cos(a) * R, Math.sin(a) * R, 0);
+    parts.push(cuff);
+  }
+  return mergeParts(parts);
+}
+
+/* ---------------------------------------------------- 6. tools & hardware */
+
+function buildDrillBody() {
+  const parts = [];
+  const housing = new THREE.CylinderGeometry(0.036, 0.033, 0.16, 14);
+  housing.rotateZ(Math.PI / 2);
+  parts.push(housing);
+  const shoulder = new THREE.SphereGeometry(0.036, 12, 8);
+  shoulder.scale(0.6, 1, 1);
+  shoulder.translate(-0.08, 0, 0);
+  parts.push(shoulder);
+  const grip = new THREE.BoxGeometry(0.05, 0.13, 0.042, 1, 3, 1);
+  grip.rotateZ(0.16);
+  grip.translate(-0.028, -0.085, 0);
+  parts.push(grip);
+  const trigger = new THREE.BoxGeometry(0.022, 0.03, 0.026);
+  trigger.translate(0.006, -0.036, 0);
+  parts.push(trigger);
+  const clutch = new THREE.CylinderGeometry(0.032, 0.032, 0.018, 14);
+  clutch.rotateZ(Math.PI / 2);
+  clutch.translate(0.072, 0, 0);
+  parts.push(clutch);
+  const vent = new THREE.BoxGeometry(0.05, 0.03, 0.07);
+  vent.translate(-0.05, 0.012, 0);
+  parts.push(vent);
+  return mergeParts(parts);
+}
+
+function buildDrillGearcase() {
+  const parts = [];
+  const nose = new THREE.CylinderGeometry(0.026, 0.031, 0.05, 14);
+  nose.rotateZ(Math.PI / 2);
+  parts.push(nose);
+  const chuck = new THREE.CylinderGeometry(0.022, 0.026, 0.052, 14);
+  chuck.rotateZ(Math.PI / 2);
+  chuck.translate(0.05, 0, 0);
+  parts.push(chuck);
+  const collar = new THREE.TorusGeometry(0.024, 0.005, 5, 14);
+  collar.rotateY(Math.PI / 2);
+  collar.translate(0.07, 0, 0);
+  parts.push(collar);
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    const jaw = new THREE.BoxGeometry(0.026, 0.008, 0.008);
+    jaw.rotateX(a);
+    jaw.translate(0.084, Math.cos(a) * 0.009, Math.sin(a) * 0.009);
+    parts.push(jaw);
+  }
+  const bit = new THREE.CylinderGeometry(0.004, 0.004, 0.07, 8);
+  bit.rotateZ(Math.PI / 2);
+  bit.translate(0.12, 0, 0);
+  parts.push(bit);
+  return mergeParts(parts);
+}
+
+function buildDrillBattery() {
+  const parts = [];
+  const pack = new THREE.BoxGeometry(0.078, 0.05, 0.068, 3, 2, 2);
+  parts.push(pack);
+  const tongue = new THREE.BoxGeometry(0.042, 0.022, 0.04);
+  tongue.translate(0.004, 0.034, 0);
+  parts.push(tongue);
+  for (let i = 0; i < 5; i++) {
+    const cell = new THREE.CylinderGeometry(0.009, 0.009, 0.05, 8);
+    cell.rotateX(Math.PI / 2);
+    cell.translate(-0.03 + i * 0.015, -0.004, 0);
+    parts.push(cell);
+  }
+  const latch = new THREE.BoxGeometry(0.014, 0.014, 0.07);
+  latch.translate(-0.036, 0.012, 0);
+  parts.push(latch);
+  return mergeParts(parts);
+}
+
+/**
+ * Sledge head: an octagonal billet with a tapered striking face at one end,
+ * a chamfered peen at the other and a raised eye boss where the handle
+ * passes through. Nothing here is thin, which is the whole point.
+ */
+function buildSledgeHead() {
+  const parts = [];
+  const body = new THREE.CylinderGeometry(0.032, 0.032, 0.17, 8);
+  body.rotateZ(Math.PI / 2);
+  parts.push(body);
+  for (const sx of [-1, 1]) {
+    const face = new THREE.CylinderGeometry(0.028, 0.032, 0.016, 8);
+    face.rotateZ(sx * Math.PI / 2);
+    face.translate(sx * 0.093, 0, 0);
+    parts.push(face);
+  }
+  const eye = new THREE.CylinderGeometry(0.019, 0.019, 0.05, 12);
+  parts.push(eye);
+  const boss = new THREE.CylinderGeometry(0.023, 0.026, 0.012, 12);
+  boss.translate(0, 0.021, 0);
+  parts.push(boss);
+  return mergeParts(parts);
+}
+
+function buildSledgeHandle() {
+  const parts = [];
+  const shaft = new THREE.CylinderGeometry(0.019, 0.016, 0.86, 12);
+  parts.push(shaft);
+  const swell = new THREE.CylinderGeometry(0.023, 0.019, 0.09, 12);
+  swell.translate(0, -0.43, 0);
+  parts.push(swell);
+  const shoulder = new THREE.CylinderGeometry(0.023, 0.02, 0.11, 12);
+  shoulder.translate(0, 0.4, 0);
+  parts.push(shoulder);
+  for (let i = 0; i < 3; i++) {
+    const wrap = new THREE.TorusGeometry(0.021, 0.0022, 4, 12);
+    wrap.rotateX(Math.PI / 2);
+    wrap.translate(0, -0.3 + i * 0.03, 0);
+    parts.push(wrap);
+  }
+  return mergeParts(parts);
+}
+
+function buildPipeWrench() {
+  const parts = [];
+  // handle: hex bar, swelling into the frame
+  const handle = new THREE.CylinderGeometry(0.017, 0.022, 0.3, 6);
+  handle.translate(0, -0.16, 0);
+  parts.push(handle);
+  const butt = new THREE.CylinderGeometry(0.02, 0.014, 0.03, 6);
+  butt.translate(0, -0.32, 0);
+  parts.push(butt);
+  const frame = new THREE.BoxGeometry(0.05, 0.13, 0.024, 2, 3, 1);
+  frame.translate(0, 0.045, 0);
+  parts.push(frame);
+  // fixed hook jaw
+  const hook = new THREE.BoxGeometry(0.086, 0.026, 0.024);
+  hook.rotateZ(-0.12);
+  hook.translate(0.036, 0.135, 0);
+  parts.push(hook);
+  const hookTooth = new THREE.BoxGeometry(0.07, 0.012, 0.022);
+  hookTooth.rotateZ(-0.12);
+  hookTooth.translate(0.03, 0.117, 0);
+  parts.push(hookTooth);
+  // movable jaw riding the frame
+  const jaw = new THREE.BoxGeometry(0.078, 0.024, 0.022);
+  jaw.rotateZ(0.1);
+  jaw.translate(0.032, 0.056, 0);
+  parts.push(jaw);
+  const jawPost = new THREE.BoxGeometry(0.028, 0.05, 0.02);
+  jawPost.translate(-0.004, 0.038, 0);
+  parts.push(jawPost);
+  // knurled adjusting nut
+  const nut = new THREE.CylinderGeometry(0.026, 0.026, 0.022, 14);
+  nut.translate(0, 0.006, 0);
+  parts.push(nut);
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const knurl = new THREE.BoxGeometry(0.004, 0.022, 0.006);
+    knurl.rotateY(-a);
+    knurl.translate(Math.cos(a) * 0.026, 0.006, Math.sin(a) * 0.026);
+    parts.push(knurl);
+  }
+  const g = mergeParts(parts);
+  // Single-body items tumble about their own origin, so sit the wrench on it.
+  g.translate(0, 0.091, 0);
+  return g;
+}
+
+function buildMowerDeck() {
+  const parts = [];
+  const pan = new THREE.CylinderGeometry(0.255, 0.275, 0.1, 22);
+  parts.push(pan);
+  const lip = new THREE.TorusGeometry(0.274, 0.009, 5, 22);
+  lip.rotateX(Math.PI / 2);
+  lip.translate(0, -0.05, 0);
+  parts.push(lip);
+  const chute = new THREE.BoxGeometry(0.15, 0.09, 0.14);
+  chute.rotateY(0.5);
+  chute.translate(0.24, -0.005, -0.2);
+  parts.push(chute);
+  const boss = new THREE.CylinderGeometry(0.06, 0.07, 0.05, 14);
+  boss.translate(0, 0.06, 0);
+  parts.push(boss);
+  for (let i = 0; i < 4; i++) {
+    const bracket = new THREE.BoxGeometry(0.05, 0.07, 0.03);
+    bracket.rotateY((i < 2 ? 0 : 1) * Math.PI);
+    bracket.translate((i % 2 ? 1 : -1) * 0.21, -0.05, (i < 2 ? 1 : -1) * 0.19);
+    parts.push(bracket);
+  }
+  return mergeParts(parts);
+}
+
+function buildMowerShroud() {
+  const parts = [];
+  const cowl = new THREE.BoxGeometry(0.28, 0.15, 0.26, 3, 2, 3);
+  parts.push(cowl);
+  const scoop = new THREE.BoxGeometry(0.16, 0.06, 0.1);
+  scoop.rotateX(0.3);
+  scoop.translate(0, 0.085, 0.1);
+  parts.push(scoop);
+  for (let i = 0; i < 6; i++) {
+    const louvre = new THREE.BoxGeometry(0.2, 0.008, 0.012);
+    louvre.translate(0, 0.02 + i * 0.018, 0.128);
+    parts.push(louvre);
+  }
+  const cap = new THREE.CylinderGeometry(0.03, 0.032, 0.02, 12);
+  cap.translate(-0.08, 0.084, -0.06);
+  parts.push(cap);
+  return mergeParts(parts);
+}
+
+function buildMowerEngine() {
+  const parts = [];
+  const block = new THREE.CylinderGeometry(0.075, 0.082, 0.13, 16);
+  parts.push(block);
+  for (let i = 0; i < 6; i++) {
+    const fin = new THREE.CylinderGeometry(0.09, 0.09, 0.006, 16);
+    fin.translate(0, -0.05 + i * 0.02, 0);
+    parts.push(fin);
+  }
+  const head = new THREE.BoxGeometry(0.12, 0.07, 0.11);
+  head.translate(0.05, 0.085, 0);
+  parts.push(head);
+  const tank = new THREE.BoxGeometry(0.13, 0.07, 0.12, 2, 1, 2);
+  tank.translate(-0.06, 0.09, 0);
+  parts.push(tank);
+  const muffler = new THREE.CylinderGeometry(0.03, 0.03, 0.09, 12);
+  muffler.rotateZ(Math.PI / 2);
+  muffler.translate(0.075, -0.01, 0.06);
+  parts.push(muffler);
+  const recoil = new THREE.CylinderGeometry(0.06, 0.06, 0.03, 14);
+  recoil.translate(0, 0.075, 0);
+  parts.push(recoil);
+  const shaft = new THREE.CylinderGeometry(0.014, 0.014, 0.11, 8);
+  shaft.translate(0, -0.1, 0);
+  parts.push(shaft);
+  return mergeParts(parts);
+}
+
+function buildMowerBlade() {
+  const parts = [];
+  const bar = new THREE.BoxGeometry(0.44, 0.008, 0.05, 8, 1, 1);
+  parts.push(bar);
+  for (const sx of [-1, 1]) {
+    const lift = new THREE.BoxGeometry(0.06, 0.024, 0.048);
+    lift.rotateX(sx * 0.5);
+    lift.translate(sx * 0.19, 0.008, 0);
+    parts.push(lift);
+    const edge = new THREE.BoxGeometry(0.12, 0.003, 0.03);
+    edge.translate(sx * 0.15, -0.004, 0.016);
+    parts.push(edge);
+  }
+  const hub = new THREE.CylinderGeometry(0.03, 0.03, 0.012, 12);
+  parts.push(hub);
+  return mergeParts(parts);
+}
+
+/** A pair of tread-moulded wheels merged into one body. */
+function buildMowerWheels(radius, width, offsetX, offsetZ) {
+  const parts = [];
+  for (const sx of [-1, 1]) {
+    const tyre = new THREE.CylinderGeometry(radius, radius, width, 16);
+    tyre.rotateZ(Math.PI / 2);
+    tyre.translate(sx * offsetX, 0, offsetZ);
+    parts.push(tyre);
+    const hub = new THREE.CylinderGeometry(radius * 0.45, radius * 0.45, width * 1.15, 12);
+    hub.rotateZ(Math.PI / 2);
+    hub.translate(sx * offsetX, 0, offsetZ);
+    parts.push(hub);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const lug = new THREE.BoxGeometry(width * 0.9, 0.012, radius * 0.5);
+      lug.rotateX(a);
+      lug.translate(sx * offsetX, Math.cos(a) * radius, offsetZ + Math.sin(a) * radius);
+      parts.push(lug);
+    }
+  }
+  return mergeParts(parts);
+}
+
+function buildMowerHandle() {
+  const parts = [];
+  for (const sx of [-1, 1]) {
+    const arm = new THREE.CylinderGeometry(0.013, 0.013, 0.62, 8);
+    arm.rotateX(-0.62);
+    arm.translate(sx * 0.19, 0, -0.02);
+    parts.push(arm);
+    const upper = new THREE.CylinderGeometry(0.012, 0.012, 0.3, 8);
+    upper.rotateX(-0.62);
+    upper.translate(sx * 0.19, 0.4, -0.29);
+    parts.push(upper);
+  }
+  const cross = new THREE.CylinderGeometry(0.012, 0.012, 0.4, 8);
+  cross.rotateZ(Math.PI / 2);
+  cross.translate(0, 0.53, -0.38);
+  parts.push(cross);
+  const bail = new THREE.CylinderGeometry(0.008, 0.008, 0.36, 6);
+  bail.rotateZ(Math.PI / 2);
+  bail.translate(0, 0.46, -0.31);
+  parts.push(bail);
+  for (const sx of [-1, 1]) {
+    const knob = new THREE.CylinderGeometry(0.018, 0.018, 0.02, 8);
+    knob.rotateZ(Math.PI / 2);
+    knob.translate(sx * 0.19, 0.13, -0.16);
+    parts.push(knob);
+  }
+  return mergeParts(parts);
+}
+
+/* ------------------------------------------------------ 7. office & home */
+
+/**
+ * A clustered block of keycaps.
+ *
+ * Modelled as one merged body per cluster on purpose: 100 individual rigid
+ * bodies would eat the entire scene budget on its own. The material carries
+ * `shatter` 0.9 / `fragmentScale` 0.22, so the block still bursts into a lot
+ * of small pieces the instant a tooth reaches it.
+ */
+function buildKeycapCluster(cols, rows, pitch, functionRow) {
+  const parts = [];
+  const x0 = -((cols - 1) * pitch) / 2;
+  const z0 = -((rows - 1) * pitch) / 2;
+  for (let r = 0; r < rows; r++) {
+    for (let ccol = 0; ccol < cols; ccol++) {
+      // the F-key row is broken into groups of four
+      if (functionRow && r === 0 && ccol % 4 === 3) continue;
+      const cap = new THREE.CylinderGeometry(0.0102, 0.012, 0.008, 4);
+      cap.rotateY(Math.PI / 4);
+      cap.translate(x0 + ccol * pitch, 0, z0 + r * pitch);
+      parts.push(cap);
+    }
+  }
+  return mergeParts(parts);
+}
+
+function buildKeyboardTray() {
+  const parts = [];
+  const pan = new THREE.BoxGeometry(0.45, 0.006, 0.155, 8, 1, 4);
+  parts.push(pan);
+  for (const sz of [-1, 1]) {
+    const wall = new THREE.BoxGeometry(0.45, 0.016, 0.007);
+    wall.translate(0, 0.008, sz * 0.074);
+    parts.push(wall);
+  }
+  for (const sx of [-1, 1]) {
+    const wall = new THREE.BoxGeometry(0.007, 0.016, 0.155);
+    wall.translate(sx * 0.2215, 0.008, 0);
+    parts.push(wall);
+  }
+  for (let i = 0; i < 3; i++) {
+    const led = new THREE.BoxGeometry(0.006, 0.003, 0.004);
+    led.translate(0.13 + i * 0.012, 0.014, -0.065);
+    parts.push(led);
+  }
+  for (let i = 0; i < 4; i++) {
+    const foot = new THREE.BoxGeometry(0.022, 0.008, 0.014);
+    foot.translate((i % 2 ? 1 : -1) * 0.19, -0.007, (i < 2 ? 1 : -1) * 0.06);
+    parts.push(foot);
+  }
+  return mergeParts(parts);
+}
+
+function buildLaptopLid() {
+  const parts = [];
+  const shell = new THREE.BoxGeometry(0.345, 0.006, 0.235, 6, 1, 4);
+  parts.push(shell);
+  for (const sz of [-1, 1]) {
+    const edge = new THREE.BoxGeometry(0.345, 0.012, 0.008);
+    edge.translate(0, 0.003, sz * 0.1135);
+    parts.push(edge);
+  }
+  for (const sx of [-1, 1]) {
+    const edge = new THREE.BoxGeometry(0.008, 0.012, 0.235);
+    edge.translate(sx * 0.1685, 0.003, 0);
+    parts.push(edge);
+  }
+  for (const sx of [-1, 1]) {
+    const hinge = new THREE.CylinderGeometry(0.008, 0.008, 0.05, 10);
+    hinge.rotateZ(Math.PI / 2);
+    hinge.translate(sx * 0.1, -0.002, 0.117);
+    parts.push(hinge);
+  }
+  return mergeParts(parts);
+}
+
+function buildLaptopBase() {
+  const parts = [];
+  const pan = new THREE.BoxGeometry(0.345, 0.004, 0.235, 6, 1, 4);
+  pan.translate(0, -0.007, 0);
+  parts.push(pan);
+  for (const sz of [-1, 1]) {
+    const wall = new THREE.BoxGeometry(0.345, 0.018, 0.005);
+    wall.translate(0, 0.002, sz * 0.115);
+    parts.push(wall);
+  }
+  for (const sx of [-1, 1]) {
+    const wall = new THREE.BoxGeometry(0.005, 0.018, 0.235);
+    wall.translate(sx * 0.17, 0.002, 0);
+    parts.push(wall);
+  }
+  const spine = new THREE.BoxGeometry(0.28, 0.02, 0.02);
+  spine.translate(0, 0.004, -0.107);
+  parts.push(spine);
+  for (let i = 0; i < 3; i++) {
+    const port = new THREE.BoxGeometry(0.006, 0.008, 0.016);
+    port.translate(0.17, 0.001, -0.05 + i * 0.03);
+    parts.push(port);
+  }
+  const vent = new THREE.BoxGeometry(0.09, 0.006, 0.01);
+  vent.translate(-0.04, 0.004, -0.106);
+  parts.push(vent);
+  for (let i = 0; i < 4; i++) {
+    const foot = new THREE.CylinderGeometry(0.008, 0.009, 0.004, 8);
+    foot.translate((i % 2 ? 1 : -1) * 0.145, -0.011, (i < 2 ? 1 : -1) * 0.095);
+    parts.push(foot);
+  }
+  return mergeParts(parts);
+}
+
+function buildLaptopDeck() {
+  const parts = [];
+  const deck = new THREE.BoxGeometry(0.33, 0.004, 0.22, 6, 1, 4);
+  parts.push(deck);
+  const pad = new THREE.BoxGeometry(0.1, 0.003, 0.06);
+  pad.translate(0, 0.003, 0.07);
+  parts.push(pad);
+  const pitch = 0.0175;
+  for (let r = 0; r < 5; r++) {
+    for (let ccol = 0; ccol < 16; ccol++) {
+      const cap = new THREE.CylinderGeometry(0.0074, 0.0082, 0.004, 4);
+      cap.rotateY(Math.PI / 4);
+      cap.translate(-0.131 + ccol * pitch, 0.004, -0.062 + r * pitch);
+      parts.push(cap);
+    }
+  }
+  return mergeParts(parts);
+}
+
+function buildChairCushion(w, h, d, dish) {
+  const g = new THREE.BoxGeometry(w, h, d, 7, 2, 7);
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) / (w * 0.5);
+    const z = pos.getZ(i) / (d * 0.5);
+    const y = pos.getY(i);
+    const f = (1 - x * x) * (1 - z * z);
+    // top face dishes in, sides bulge out — a foam pad under a fabric skin
+    pos.setY(i, y - (y > 0 ? f * dish : -f * dish * 0.4));
+    pos.setX(i, pos.getX(i) * (1 + (1 - Math.abs(y) / (h * 0.5)) * 0.03));
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+function buildChairBase() {
+  const parts = [];
+  const hub = new THREE.CylinderGeometry(0.05, 0.056, 0.06, 14);
+  parts.push(hub);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const arm = new THREE.BoxGeometry(0.28, 0.026, 0.05);
+    arm.rotateZ(-0.06);
+    arm.rotateY(-a);
+    arm.translate(Math.cos(a) * 0.15, -0.012, -Math.sin(a) * 0.15);
+    parts.push(arm);
+    const tip = new THREE.CylinderGeometry(0.02, 0.018, 0.03, 8);
+    tip.translate(Math.cos(a) * 0.28, -0.022, -Math.sin(a) * 0.28);
+    parts.push(tip);
+  }
+  return mergeParts(parts);
+}
+
+function buildChairPiston() {
+  const parts = [];
+  const outer = new THREE.CylinderGeometry(0.028, 0.03, 0.16, 14);
+  parts.push(outer);
+  const inner = new THREE.CylinderGeometry(0.018, 0.018, 0.13, 12);
+  inner.translate(0, 0.13, 0);
+  parts.push(inner);
+  const shroud = new THREE.CylinderGeometry(0.036, 0.042, 0.1, 14);
+  shroud.translate(0, 0.03, 0);
+  parts.push(shroud);
+  const plate = new THREE.BoxGeometry(0.19, 0.014, 0.16, 2, 1, 2);
+  plate.translate(0, 0.2, 0);
+  parts.push(plate);
+  const lever = new THREE.CylinderGeometry(0.008, 0.008, 0.11, 6);
+  lever.rotateZ(Math.PI / 2);
+  lever.translate(0.09, 0.18, 0.06);
+  parts.push(lever);
+  return mergeParts(parts);
+}
+
+function buildChairCastors() {
+  const parts = [];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const cx = Math.cos(a) * 0.28;
+    const cz = -Math.sin(a) * 0.28;
+    const stem = new THREE.CylinderGeometry(0.008, 0.008, 0.036, 8);
+    stem.translate(cx, 0.03, cz);
+    parts.push(stem);
+    const fork = new THREE.BoxGeometry(0.05, 0.028, 0.03);
+    fork.rotateY(-a);
+    fork.translate(cx, 0.004, cz);
+    parts.push(fork);
+    for (const s of [-1, 1]) {
+      const wheel = new THREE.CylinderGeometry(0.026, 0.026, 0.012, 12);
+      wheel.rotateZ(Math.PI / 2);
+      wheel.rotateY(-a);
+      wheel.translate(cx - Math.sin(a) * s * 0.017, -0.014, cz - Math.cos(a) * s * 0.017);
+      parts.push(wheel);
+    }
+  }
+  return mergeParts(parts);
+}
+
+function buildChairArms() {
+  const parts = [];
+  for (const sx of [-1, 1]) {
+    const post = new THREE.BoxGeometry(0.03, 0.15, 0.036);
+    post.rotateZ(sx * 0.08);
+    post.translate(sx * 0.265, 0.02, -0.02);
+    parts.push(post);
+    const pad = new THREE.BoxGeometry(0.05, 0.02, 0.19, 1, 1, 3);
+    pad.translate(sx * 0.275, 0.105, 0.01);
+    parts.push(pad);
+    const knuckle = new THREE.BoxGeometry(0.048, 0.05, 0.05);
+    knuckle.translate(sx * 0.262, -0.055, -0.03);
+    parts.push(knuckle);
+  }
+  return mergeParts(parts);
+}
+
+/**
+ * White monobloc garden chair — one moulding, so one body, and the whole
+ * thing is `hardPlastic`: it does not bend, it goes off like a bag of glass.
+ */
+function buildLawnChair() {
+  const parts = [];
+  const pan = new THREE.BoxGeometry(0.44, 0.02, 0.42, 6, 1, 6);
+  const pos = pan.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) / 0.22;
+    const z = pos.getZ(i) / 0.21;
+    pos.setY(i, pos.getY(i) - (1 - x * x) * (1 - z * z) * 0.014);
+  }
+  pan.computeVertexNormals();
+  pan.translate(0, 0.2, 0);
+  parts.push(pan);
+
+  // back: two uprights, a top rail and five slats, merged then leant back
+  const back = [];
+  for (const sx of [-1, 1]) {
+    const upright = new THREE.BoxGeometry(0.03, 0.4, 0.024);
+    upright.translate(sx * 0.2, 0.2, 0);
+    back.push(upright);
+  }
+  const rail = new THREE.BoxGeometry(0.43, 0.05, 0.026);
+  rail.translate(0, 0.395, 0);
+  back.push(rail);
+  for (let i = 0; i < 5; i++) {
+    const slat = new THREE.BoxGeometry(0.05, 0.34, 0.016);
+    slat.translate(-0.14 + i * 0.07, 0.19, 0);
+    back.push(slat);
+  }
+  const backG = mergeParts(back);
+  backG.rotateX(0.22);
+  backG.translate(0, 0.2, -0.2);
+  parts.push(backG);
+
+  for (const sx of [-1, 1]) {
+    const arm = new THREE.BoxGeometry(0.05, 0.022, 0.36);
+    arm.translate(sx * 0.215, 0.35, -0.03);
+    parts.push(arm);
+    const armFront = new THREE.BoxGeometry(0.042, 0.16, 0.05);
+    armFront.translate(sx * 0.215, 0.27, 0.145);
+    parts.push(armFront);
+  }
+  for (let i = 0; i < 4; i++) {
+    const sx = i % 2 ? 1 : -1;
+    const sz = i < 2 ? 1 : -1;
+    const leg = new THREE.CylinderGeometry(0.018, 0.026, 0.21, 8);
+    leg.rotateZ(-sx * 0.1);
+    leg.rotateX(sz * 0.1);
+    leg.translate(sx * 0.2, 0.09, sz * 0.185);
+    parts.push(leg);
+  }
+  const stretcher = new THREE.BoxGeometry(0.4, 0.018, 0.02);
+  stretcher.translate(0, 0.03, 0.185);
+  parts.push(stretcher);
+  const g = mergeParts(parts);
+  // Authored standing on the floor; drop it onto its own centroid so it
+  // spawns and tumbles about the seat rather than about its feet.
+  g.translate(0, -0.298, 0);
+  return g;
+}
+
 /* ---------------------------------------------------------------- library */
 
 let cache = null;
@@ -832,6 +1786,7 @@ export function getScrapLibrary() {
   cache = [
     {
       id: 'can', label: 'Aluminium Can', hint: '330 ml · thin wall', mass: 0.016,
+      value: 0.15, category: 'raw',
       material: 'aluminium', thickness: 0.0004, key: '1',
       build: () => {
         const g = tagUV(buildCan(0.033, 0.122));
@@ -843,6 +1798,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'sheet', label: 'Steel Panel', hint: '1.2 mm galvanised sheet', mass: 4.4,
+      value: 2.50, category: 'raw',
       material: 'galvanised', thickness: 0.0012, key: '2',
       build: () => {
         const g = tagUV(buildSheet(0.52, 0.42, 0.012));
@@ -851,6 +1807,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'pipe', label: 'Steel Pipe', hint: 'Ø60 × 3 mm wall', mass: 5.8,
+      value: 3.20, category: 'raw',
       material: 'rustedSteel', thickness: 0.003, key: '3',
       build: () => {
         const g = tagUV(buildPipe(0.72, 0.03, 0.024, 22));
@@ -859,6 +1816,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'rebar', label: 'Rebar Rod', hint: 'Ø16 solid, ribbed', mass: 2.1,
+      value: 1.80, category: 'raw',
       material: 'rustedSteel', thickness: 0.008, key: '4',
       build: () => {
         const parts = [];
@@ -881,6 +1839,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'beam', label: 'I-Beam Offcut', hint: 'UB 100 × 900 mm', mass: 15.2,
+      value: 9.00, category: 'raw',
       material: 'mildSteel', thickness: 0.006, key: '5',
       build: () => {
         const g = tagUV(buildIBeam(0.9, 0.11, 0.07, 0.008, 0.011));
@@ -899,7 +1858,7 @@ export function getScrapLibrary() {
 
     {
       id: 'tv', label: 'Flat Screen TV', hint: '0.95 m panel · glass, ABS, steel, PCB',
-      key: '6', mass: 9.5, assembly: true,
+      key: '6', mass: 9.5, value: 12.00, category: 'office', assembly: true,
       // dominant material, for anything that asks the assembly as a whole
       material: 'applianceSteel', thickness: 0.0008,
       parts: [
@@ -955,7 +1914,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'speaker', label: 'Sound System', hint: 'MDF cabinet · cone drivers · ferrite',
-      key: '7', mass: 14, assembly: true,
+      key: '7', mass: 14, value: 16.00, category: 'furniture', assembly: true,
       material: 'mdf', thickness: 0.015,
       parts: [
         {
@@ -1023,7 +1982,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'wheel', label: 'Car Wheel', hint: 'Ø620 tyre on a 5-spoke alloy',
-      key: '8', mass: 18, assembly: true,
+      key: '8', mass: 18, value: 22.00, category: 'tools', assembly: true,
       material: 'rubber', thickness: 0.012,
       parts: [
         {
@@ -1056,7 +2015,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'microwave', label: 'Microwave Oven', hint: '900 W · enamel, glass, transformer',
-      key: '9', mass: 15, assembly: true,
+      key: '9', mass: 15, value: 14.00, category: 'appliance', assembly: true,
       material: 'applianceSteel', thickness: 0.0007,
       parts: [
         {
@@ -1111,6 +2070,7 @@ export function getScrapLibrary() {
 
     {
       id: 'engine', label: 'Engine Block', hint: 'The real test — 4 cyl', mass: 62,
+      value: 65.00, category: 'tools',
       material: 'castIron', thickness: 0.014, key: '0',
       build: () => {
         const g = tagUV(buildEngineBlock());
@@ -1128,6 +2088,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'toolbox', label: 'Tool Box', hint: 'Painted steel, empty', mass: 6.5,
+      value: 11.00, category: 'tools',
       material: 'paintedSteel', thickness: 0.0012,
       build: () => {
         const g = tagUV(buildToolbox());
@@ -1136,6 +2097,7 @@ export function getScrapLibrary() {
     },
     {
       id: 'gear', label: 'Cast Gear', hint: 'Brittle grey iron', mass: 7.9,
+      value: 7.00, category: 'tools',
       material: 'castIron', thickness: 0.02,
       build: () => {
         const g = tagUV(buildGear(0.13, 0.038, 18));
@@ -1144,10 +2106,613 @@ export function getScrapLibrary() {
     },
     {
       id: 'radiator', label: 'Copper Radiator', hint: 'Finned core, very ductile', mass: 3.4,
+      value: 8.50, category: 'appliance',
       material: 'copper', thickness: 0.0006,
       build: () => {
         const g = tagUV(buildRadiator());
         return { geometry: g, colliders: [boxCollider(0.22, 0.19, 0.032)] };
+      },
+    },
+
+    /* -------------------------------------------- kitchen and housewares */
+
+    {
+      id: 'blender', label: 'Blender', hint: 'Glass jug · ABS base · copper motor',
+      mass: 2.4, value: 6.00, category: 'kitchen', assembly: true,
+      material: 'abs', thickness: 0.003,
+      parts: [
+        {
+          name: 'jug', material: 'glass', thickness: 0.004, mass: 0.95,
+          offset: [0, 0.076, 0],
+          build: () => ({
+            geometry: tagUV(buildBlenderJug()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.095, radius: 0.09, offset: [0, 0.001, 0] },
+              boxCollider(0.028, 0.05, 0.011, [0.107, 0.014, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'lid', material: 'hardPlastic', thickness: 0.005, mass: 0.08,
+          offset: [0, 0.178, 0],
+          build: () => ({
+            geometry: tagUV(buildBlenderLid()),
+            colliders: [{ type: 'cylinder', halfHeight: 0.019, radius: 0.092, offset: [0, -0.004, 0] }],
+          }),
+        },
+        {
+          name: 'base', material: 'abs', thickness: 0.003, mass: 0.75,
+          offset: [0, -0.1, 0],
+          build: () => ({
+            geometry: tagUV(buildBlenderBase()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.075, radius: 0.082 },
+              { type: 'cylinder', halfHeight: 0.009, radius: 0.062, offset: [0, 0.082, 0] },
+            ],
+          }),
+        },
+        {
+          name: 'blade', material: 'hardenedSteel', thickness: 0.002, mass: 0.12,
+          offset: [0, -0.004, 0],
+          build: () => ({
+            geometry: tagUV(buildBlenderBlade()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.014, radius: 0.033 },
+              { type: 'cylinder', halfHeight: 0.027, radius: 0.008, offset: [0, -0.032, 0] },
+            ],
+          }),
+        },
+        {
+          name: 'motor', material: 'copperWinding', thickness: 0.008, mass: 0.5,
+          offset: [0, -0.09, 0],
+          build: () => ({
+            geometry: tagUV(buildMotorCan(0.038, 0.07, 16)),
+            colliders: [{ type: 'cylinder', halfHeight: 0.043, radius: 0.04 }],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'toaster', label: '2-Slice Toaster', hint: 'Chrome shell · nichrome element rack',
+      mass: 1.4, value: 3.00, category: 'kitchen', assembly: true,
+      material: 'chrome', thickness: 0.0035,
+      parts: [
+        {
+          name: 'shell', material: 'chrome', thickness: 0.0035, mass: 0.7,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildToasterShell()),
+            colliders: [
+              boxCollider(0.13, 0.095, 0.00175, [0, 0, 0.08025]),
+              boxCollider(0.13, 0.095, 0.00175, [0, 0, -0.08025]),
+              boxCollider(0.13, 0.00175, 0.082, [0, 0.09325, 0]),
+              boxCollider(0.13, 0.00175, 0.082, [0, -0.09325, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'ends', material: 'hardPlastic', thickness: 0.006, mass: 0.22,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildToasterEnds()),
+            colliders: [
+              boxCollider(0.006, 0.096, 0.083, [-0.136, 0, 0]),
+              boxCollider(0.006, 0.096, 0.083, [0.136, 0, 0]),
+              boxCollider(0.016, 0.055, 0.011, [0.088, 0.03, 0.086]),
+            ],
+          }),
+        },
+        {
+          name: 'elements', material: 'nichrome', thickness: 0.0016, mass: 0.3,
+          offset: [0, 0.01, 0],
+          build: () => ({
+            geometry: tagUV(buildToasterElements()),
+            colliders: [
+              boxCollider(0.102, 0.065, 0.0026, [0, 0, -0.052]),
+              boxCollider(0.102, 0.065, 0.0026, [0, 0, -0.017]),
+              boxCollider(0.102, 0.065, 0.0026, [0, 0, 0.017]),
+              boxCollider(0.102, 0.065, 0.0026, [0, 0, 0.052]),
+            ],
+          }),
+        },
+        {
+          name: 'board', material: 'pcb', thickness: 0.0016, mass: 0.18,
+          offset: [0, -0.07, -0.02],
+          build: () => ({
+            geometry: tagUV(buildSmallBoard(0.12, 0.05, 5)),
+            colliders: [boxCollider(0.062, 0.028, 0.008, [0, 0, 0.004])],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'coffeeMaker', label: 'Coffee Maker', hint: 'ABS shell · glass carafe · copper line',
+      mass: 2.2, value: 5.00, category: 'kitchen', assembly: true,
+      material: 'abs', thickness: 0.003,
+      parts: [
+        {
+          name: 'shell', material: 'abs', thickness: 0.003, mass: 0.95,
+          offset: [0, 0.02, 0],
+          build: () => ({
+            geometry: tagUV(buildCoffeeShell()),
+            colliders: [
+              boxCollider(0.085, 0.15, 0.07, [0, 0.03, -0.055]),
+              boxCollider(0.085, 0.035, 0.075, [0, 0.152, 0.035]),
+              boxCollider(0.085, 0.025, 0.12, [0, -0.145, 0.02]),
+            ],
+          }),
+        },
+        {
+          name: 'carafe', material: 'glass', thickness: 0.004, mass: 0.62,
+          offset: [0, -0.028, 0.1],
+          build: () => ({
+            geometry: tagUV(buildCarafe()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.085, radius: 0.078, offset: [0, 0.011, 0] },
+              boxCollider(0.024, 0.042, 0.01, [0.094, 0.01, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'hotplate', material: 'mildSteel', thickness: 0.003, mass: 0.4,
+          offset: [0, -0.104, 0.1],
+          build: () => ({
+            geometry: tagUV(buildHotPlate()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.008, radius: 0.078 },
+              boxCollider(0.045, 0.007, 0.025, [0, -0.012, -0.05]),
+            ],
+          }),
+        },
+        {
+          name: 'tubing', material: 'copper', thickness: 0.0008, mass: 0.23,
+          offset: [0.0, 0.03, -0.03],
+          build: () => ({
+            geometry: tagUV(buildCopperTubing()),
+            colliders: [
+              boxCollider(0.082, 0.082, 0.008, [0.01, 0.01, 0]),
+              boxCollider(0.008, 0.075, 0.008, [-0.072, 0.03, 0]),
+            ],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'vacuum', label: 'Vacuum Cleaner', hint: 'Canister · rubber hose · steel motor',
+      mass: 5.6, value: 9.00, category: 'kitchen', assembly: true,
+      material: 'abs', thickness: 0.004,
+      parts: [
+        {
+          name: 'body', material: 'abs', thickness: 0.004, mass: 2.6,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildVacuumBody()),
+            colliders: [{ type: 'cylinder', halfHeight: 0.155, radius: 0.13, rotation: axisQuat(0, 0, 1, Math.PI / 2) }],
+          }),
+        },
+        {
+          name: 'hose', material: 'rubber', thickness: 0.004, mass: 0.9,
+          offset: [-0.1, 0.16, 0.0], rotation: [0, 0, 0.5],
+          build: () => {
+            const colliders = [];
+            const R = 0.155;
+            for (const i of [1, 4, 7]) {
+              const a = -0.25 + (i / 9) * Math.PI * 1.05;
+              colliders.push({
+                type: 'cylinder', halfHeight: 0.085, radius: 0.027,
+                offset: [Math.cos(a) * R, Math.sin(a) * R, 0],
+                rotation: axisQuat(0, 0, 1, a),
+              });
+            }
+            return { geometry: tagUV(buildVacuumHose()), colliders };
+          },
+        },
+        {
+          name: 'motor', material: 'mildSteel', thickness: 0.006, mass: 1.85,
+          offset: [-0.06, -0.02, 0], rotation: [0, 0, Math.PI / 2],
+          build: () => ({
+            geometry: tagUV(buildMotorCan(0.052, 0.1, 16)),
+            colliders: [{ type: 'cylinder', halfHeight: 0.062, radius: 0.055 }],
+          }),
+        },
+        {
+          name: 'board', material: 'pcb', thickness: 0.0016, mass: 0.25,
+          offset: [0.06, -0.06, 0.06],
+          build: () => ({
+            geometry: tagUV(buildSmallBoard(0.11, 0.06, 6)),
+            colliders: [boxCollider(0.057, 0.032, 0.008, [0, 0, 0.004])],
+          }),
+        },
+      ],
+    },
+
+    /* ------------------------------------------------- tools and hardware */
+
+    {
+      id: 'powerDrill', label: 'Cordless Drill', hint: '18 V · alloy gearcase · dense pack',
+      mass: 1.9, value: 18.00, category: 'tools', assembly: true,
+      material: 'abs', thickness: 0.004,
+      parts: [
+        {
+          name: 'body', material: 'abs', thickness: 0.004, mass: 0.55,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildDrillBody()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.085, radius: 0.036, rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+              boxCollider(0.026, 0.065, 0.021, [-0.028, -0.085, 0], axisQuat(0, 0, 1, 0.16)),
+            ],
+          }),
+        },
+        {
+          name: 'gearcase', material: 'aluminium', thickness: 0.005, mass: 0.42,
+          offset: [0.088, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildDrillGearcase()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.052, radius: 0.03, offset: [0.026, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+              { type: 'cylinder', halfHeight: 0.035, radius: 0.006, offset: [0.12, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+            ],
+          }),
+        },
+        {
+          name: 'battery', material: 'mildSteel', thickness: 0.01, mass: 0.62,
+          offset: [-0.05, -0.176, 0],
+          build: () => ({
+            geometry: tagUV(buildDrillBattery()),
+            colliders: [boxCollider(0.039, 0.025, 0.034)],
+          }),
+        },
+        {
+          name: 'motor', material: 'copperWinding', thickness: 0.006, mass: 0.31,
+          offset: [-0.03, 0, 0], rotation: [0, 0, Math.PI / 2],
+          build: () => ({
+            geometry: tagUV(buildMotorCan(0.026, 0.05, 14)),
+            colliders: [{ type: 'cylinder', halfHeight: 0.031, radius: 0.028 }],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'sledgehammer', label: 'Sledgehammer', hint: '4 kg hardened head — motor killer',
+      mass: 5.4, value: 12.00, category: 'tools', assembly: true,
+      material: 'hardenedSteel', thickness: 0.03,
+      parts: [
+        {
+          name: 'head', material: 'hardenedSteel', thickness: 0.032, mass: 4.2,
+          offset: [0, 0.42, 0],
+          build: () => ({
+            geometry: tagUV(buildSledgeHead()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.1, radius: 0.034, rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+              { type: 'cylinder', halfHeight: 0.031, radius: 0.024 },
+            ],
+          }),
+        },
+        {
+          name: 'handle', material: 'wood', thickness: 0.018, mass: 1.2,
+          offset: [0, -0.04, 0],
+          build: () => ({
+            geometry: tagUV(buildSledgeHandle()),
+            colliders: [{ type: 'cylinder', halfHeight: 0.45, radius: 0.021 }],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'pipeWrench', label: 'Pipe Wrench', hint: 'Drop-forged solid — nothing gives',
+      mass: 3.2, value: 10.00, category: 'tools',
+      material: 'hardenedSteel', thickness: 0.022,
+      build: () => {
+        const g = tagUV(buildPipeWrench());
+        return {
+          geometry: g,
+          colliders: [
+            boxCollider(0.022, 0.165, 0.012, [0, -0.069, 0]),
+            boxCollider(0.026, 0.065, 0.012, [0, 0.136, 0]),
+            boxCollider(0.045, 0.017, 0.012, [0.036, 0.223, 0]),
+            boxCollider(0.04, 0.015, 0.011, [0.032, 0.147, 0]),
+            { type: 'cylinder', halfHeight: 0.011, radius: 0.027, offset: [0, 0.097, 0] },
+          ],
+        };
+      },
+    },
+    {
+      id: 'lawnmower', label: 'Lawn Mower', hint: 'The boss — deck, engine, blade, four wheels',
+      mass: 32, value: 65.00, category: 'tools', assembly: true,
+      material: 'mildSteel', thickness: 0.0022,
+      parts: [
+        {
+          name: 'deck', material: 'mildSteel', thickness: 0.0022, mass: 12.5,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildMowerDeck()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.05, radius: 0.265 },
+              boxCollider(0.075, 0.045, 0.07, [0.24, -0.005, -0.2], axisQuat(0, 1, 0, 0.5)),
+            ],
+          }),
+        },
+        {
+          name: 'shroud', material: 'abs', thickness: 0.004, mass: 2.4,
+          offset: [0, 0.13, 0],
+          build: () => ({
+            geometry: tagUV(buildMowerShroud()),
+            colliders: [
+              boxCollider(0.14, 0.075, 0.006, [0, 0, 0.124]),
+              boxCollider(0.14, 0.075, 0.006, [0, 0, -0.124]),
+              boxCollider(0.006, 0.075, 0.118, [-0.134, 0, 0]),
+              boxCollider(0.006, 0.075, 0.118, [0.134, 0, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'engine', material: 'aluminium', thickness: 0.008, mass: 8,
+          offset: [0, 0.125, 0],
+          build: () => ({
+            geometry: tagUV(buildMowerEngine()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.065, radius: 0.082 },
+              boxCollider(0.06, 0.035, 0.055, [0.05, 0.085, 0]),
+              boxCollider(0.065, 0.035, 0.06, [-0.06, 0.09, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'blade', material: 'hardenedSteel', thickness: 0.004, mass: 1.6,
+          offset: [0, -0.068, 0],
+          build: () => ({
+            geometry: tagUV(buildMowerBlade()),
+            colliders: [
+              boxCollider(0.22, 0.004, 0.025),
+              boxCollider(0.03, 0.012, 0.024, [-0.19, 0.008, 0]),
+              boxCollider(0.03, 0.012, 0.024, [0.19, 0.008, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'wheelsFront', material: 'rubber', thickness: 0.012, mass: 2.2,
+          offset: [0, -0.055, 0.19],
+          build: () => ({
+            geometry: tagUV(buildMowerWheels(0.085, 0.05, 0.3, 0)),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.028, radius: 0.09, offset: [-0.3, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+              { type: 'cylinder', halfHeight: 0.028, radius: 0.09, offset: [0.3, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+            ],
+          }),
+        },
+        {
+          name: 'wheelsRear', material: 'rubber', thickness: 0.014, mass: 2.6,
+          offset: [0, -0.04, -0.19],
+          build: () => ({
+            geometry: tagUV(buildMowerWheels(0.1, 0.055, 0.3, 0)),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.031, radius: 0.106, offset: [-0.3, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+              { type: 'cylinder', halfHeight: 0.031, radius: 0.106, offset: [0.3, 0, 0], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+            ],
+          }),
+        },
+        {
+          name: 'handle', material: 'mildSteel', thickness: 0.0015, mass: 2.7,
+          offset: [0, 0.16, -0.26],
+          build: () => ({
+            geometry: tagUV(buildMowerHandle()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.31, radius: 0.014, offset: [-0.19, 0, -0.02], rotation: axisQuat(1, 0, 0, -0.62) },
+              { type: 'cylinder', halfHeight: 0.31, radius: 0.014, offset: [0.19, 0, -0.02], rotation: axisQuat(1, 0, 0, -0.62) },
+              { type: 'cylinder', halfHeight: 0.2, radius: 0.02, offset: [0, 0.5, -0.355], rotation: axisQuat(0, 0, 1, Math.PI / 2) },
+            ],
+          }),
+        },
+      ],
+    },
+
+    /* -------------------------------------------------- office and living */
+
+    {
+      id: 'keyboard', label: 'Keyboard', hint: 'Alloy tray · PCB · 120 keycaps',
+      mass: 0.9, value: 4.00, category: 'office', assembly: true,
+      material: 'aluminium', thickness: 0.0012,
+      parts: [
+        {
+          name: 'tray', material: 'aluminium', thickness: 0.0012, mass: 0.34,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildKeyboardTray()),
+            colliders: [boxCollider(0.225, 0.004, 0.0775, [0, 0.001, 0])],
+          }),
+        },
+        {
+          name: 'board', material: 'pcb', thickness: 0.0016, mass: 0.18,
+          offset: [0, -0.007, 0],
+          build: () => ({
+            geometry: tagUV(buildSmallBoard(0.4, 0.13, 8)),
+            colliders: [boxCollider(0.205, 0.068, 0.0015)],
+          }),
+        },
+        {
+          name: 'keysLeft', material: 'hardPlastic', thickness: 0.0025, mass: 0.15,
+          offset: [-0.145, 0.009, 0],
+          build: () => ({
+            geometry: tagUV(buildKeycapCluster(8, 6, 0.019, true)),
+            colliders: [boxCollider(0.077, 0.004, 0.058)],
+          }),
+        },
+        {
+          name: 'keysRight', material: 'hardPlastic', thickness: 0.0025, mass: 0.15,
+          offset: [0.007, 0.009, 0],
+          build: () => ({
+            geometry: tagUV(buildKeycapCluster(8, 6, 0.019, true)),
+            colliders: [boxCollider(0.077, 0.004, 0.058)],
+          }),
+        },
+        {
+          name: 'keysPad', material: 'hardPlastic', thickness: 0.0025, mass: 0.08,
+          offset: [0.153, 0.009, 0.01],
+          build: () => ({
+            geometry: tagUV(buildKeycapCluster(5, 5, 0.019, false)),
+            colliders: [boxCollider(0.05, 0.004, 0.05)],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'laptop', label: 'Laptop', hint: 'Glass panel · aluminium unibody · PCB',
+      mass: 2.1, value: 15.00, category: 'office', assembly: true,
+      material: 'aluminium', thickness: 0.0015,
+      parts: [
+        {
+          name: 'base', material: 'aluminium', thickness: 0.0015, mass: 0.62,
+          offset: [0, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildLaptopBase()),
+            colliders: [boxCollider(0.1725, 0.006, 0.1175, [0, -0.004, 0])],
+          }),
+        },
+        {
+          name: 'deck', material: 'hardPlastic', thickness: 0.002, mass: 0.28,
+          offset: [0, 0.012, 0.005],
+          build: () => ({
+            geometry: tagUV(buildLaptopDeck()),
+            colliders: [boxCollider(0.165, 0.004, 0.11)],
+          }),
+        },
+        {
+          name: 'board', material: 'pcb', thickness: 0.0016, mass: 0.3,
+          offset: [0, -0.016, -0.02],
+          build: () => ({
+            geometry: tagUV(buildSmallBoard(0.26, 0.13, 9)),
+            colliders: [boxCollider(0.132, 0.068, 0.0018)],
+          }),
+        },
+        {
+          name: 'lid', material: 'aluminium', thickness: 0.0015, mass: 0.48,
+          offset: [0, 0.117, -0.165], rotation: [1.15, 0, 0],
+          build: () => ({
+            geometry: tagUV(buildLaptopLid()),
+            colliders: [boxCollider(0.1725, 0.008, 0.1175)],
+          }),
+        },
+        {
+          name: 'screen', material: 'glass', thickness: 0.0028, mass: 0.42,
+          offset: [0, 0.1215, -0.155], rotation: [1.15, 0, 0],
+          build: () => {
+            const parts = [];
+            const glass = new THREE.BoxGeometry(0.31, 0.0028, 0.2, 8, 1, 5);
+            parts.push(glass);
+            const stack = new THREE.BoxGeometry(0.3, 0.0022, 0.192, 4, 1, 3);
+            stack.translate(0, -0.0026, 0);
+            parts.push(stack);
+            return {
+              geometry: tagUV(mergeParts(parts)),
+              colliders: [boxCollider(0.155, 0.0032, 0.1, [0, -0.0013, 0])],
+            };
+          },
+        },
+      ],
+    },
+    {
+      id: 'officeChair', label: 'Office Chair', hint: 'Mesh seat · chrome star · gas piston',
+      mass: 11, value: 13.00, category: 'furniture', assembly: true,
+      material: 'fabric', thickness: 0.012,
+      parts: [
+        {
+          name: 'seat', material: 'fabric', thickness: 0.012, mass: 2.1,
+          offset: [0, 0.07, 0],
+          build: () => ({
+            geometry: tagUV(buildChairCushion(0.46, 0.09, 0.44, 0.012)),
+            colliders: [boxCollider(0.235, 0.045, 0.22)],
+          }),
+        },
+        {
+          name: 'back', material: 'fabric', thickness: 0.01, mass: 1.4,
+          offset: [0, 0.35, -0.215], rotation: [-0.18, 0, 0],
+          build: () => {
+            const g = buildChairCushion(0.42, 0.075, 0.44, 0.01);
+            g.rotateX(-Math.PI / 2);
+            return { geometry: tagUV(g), colliders: [boxCollider(0.215, 0.22, 0.038)] };
+          },
+        },
+        {
+          name: 'base', material: 'chrome', thickness: 0.013, mass: 3.6,
+          offset: [0, -0.3, 0],
+          build: () => {
+            const colliders = [{ type: 'cylinder', halfHeight: 0.03, radius: 0.056 }];
+            for (let i = 0; i < 5; i++) {
+              const a = (i / 5) * Math.PI * 2;
+              colliders.push(boxCollider(0.14, 0.013, 0.025,
+                [Math.cos(a) * 0.15, -0.012, -Math.sin(a) * 0.15], axisQuat(0, 1, 0, a)));
+            }
+            return { geometry: tagUV(buildChairBase()), colliders };
+          },
+        },
+        {
+          name: 'piston', material: 'mildSteel', thickness: 0.014, mass: 2.2,
+          offset: [0, -0.19, 0],
+          build: () => ({
+            geometry: tagUV(buildChairPiston()),
+            colliders: [
+              { type: 'cylinder', halfHeight: 0.08, radius: 0.042 },
+              { type: 'cylinder', halfHeight: 0.065, radius: 0.018, offset: [0, 0.13, 0] },
+              boxCollider(0.095, 0.007, 0.08, [0, 0.2, 0]),
+            ],
+          }),
+        },
+        {
+          name: 'castors', material: 'hardPlastic', thickness: 0.006, mass: 1,
+          offset: [0, -0.355, 0],
+          build: () => {
+            const colliders = [];
+            for (let i = 0; i < 5; i++) {
+              const a = (i / 5) * Math.PI * 2;
+              colliders.push({
+                type: 'cylinder', halfHeight: 0.024, radius: 0.026,
+                offset: [Math.cos(a) * 0.28, -0.014, -Math.sin(a) * 0.28],
+                rotation: axisQuat(0, 0, 1, Math.PI / 2),
+              });
+            }
+            return { geometry: tagUV(buildChairCastors()), colliders };
+          },
+        },
+        {
+          name: 'armrests', material: 'hardPlastic', thickness: 0.005, mass: 0.7,
+          offset: [0, 0.14, 0],
+          build: () => ({
+            geometry: tagUV(buildChairArms()),
+            colliders: [
+              boxCollider(0.025, 0.075, 0.018, [-0.265, 0.02, -0.02]),
+              boxCollider(0.025, 0.075, 0.018, [0.265, 0.02, -0.02]),
+              boxCollider(0.025, 0.01, 0.095, [-0.275, 0.105, 0.01]),
+              boxCollider(0.025, 0.01, 0.095, [0.275, 0.105, 0.01]),
+            ],
+          }),
+        },
+      ],
+    },
+    {
+      id: 'lawnChair', label: 'Lawn Chair', hint: 'Brittle white monobloc — goes off like glass',
+      mass: 2.6, value: 3.00, category: 'furniture',
+      material: 'hardPlastic', thickness: 0.008,
+      build: () => {
+        const g = tagUV(buildLawnChair());
+        const colliders = [
+          boxCollider(0.22, 0.012, 0.21, [0, -0.1, 0]),
+          boxCollider(0.215, 0.21, 0.026, [0, 0.097, -0.238], axisQuat(1, 0, 0, 0.22)),
+          boxCollider(0.025, 0.012, 0.18, [-0.215, 0.052, -0.03]),
+          boxCollider(0.025, 0.012, 0.18, [0.215, 0.052, -0.03]),
+          boxCollider(0.021, 0.08, 0.025, [-0.215, -0.028, 0.145]),
+          boxCollider(0.021, 0.08, 0.025, [0.215, -0.028, 0.145]),
+        ];
+        for (let i = 0; i < 4; i++) {
+          const sx = i % 2 ? 1 : -1;
+          const sz = i < 2 ? 1 : -1;
+          colliders.push({
+            type: 'cylinder', halfHeight: 0.105, radius: 0.024,
+            offset: [sx * 0.2, -0.208, sz * 0.185],
+            rotation: axisQuat(0, 0, 1, -sx * 0.1),
+          });
+        }
+        return { geometry: g, colliders };
       },
     },
   ];

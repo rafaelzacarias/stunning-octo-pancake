@@ -12,12 +12,31 @@ import { VFXDirector } from './vfx/VFXDirector.js';
 import { CameraDirector, CAMERA_PRESETS } from './camera/CameraDirector.js';
 import { AudioEngine } from './audio/AudioEngine.js';
 import { ControlPanel } from './ui/ControlPanel.js';
+import { GameHUD } from './ui/GameHUD.js';
+import { GameDirector } from './game/GameDirector.js';
+import { FloatingTextSystem } from './vfx/FloatingText.js';
 import { getScrapLibrary, getScrapDef } from './objects/ScrapLibrary.js';
 import { getMetalMaterial } from './materials/MetalMaterial.js';
 import { updateHeatTime, ensureHeatAttributes } from './materials/HeatShader.js';
 import { ThumbnailRenderer } from './ui/ThumbnailRenderer.js';
 
-const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+/**
+ * Yield to the browser so the boot overlay can paint between heavy steps.
+ *
+ * Races requestAnimationFrame against a MessageChannel macrotask. A page
+ * loaded in a background tab never fires rAF and clamps chained setTimeout to
+ * roughly once per minute, either of which would stall boot indefinitely.
+ * MessageChannel is not throttled, so boot always completes; rAF still wins
+ * when the tab is visible, which is when we actually want to paint.
+ */
+const nextFrame = () => new Promise((resolve) => {
+  let settled = false;
+  const finish = () => { if (!settled) { settled = true; resolve(); } };
+  requestAnimationFrame(finish);
+  const ch = new MessageChannel();
+  ch.port1.onmessage = finish;
+  ch.port2.postMessage(0);
+});
 
 class ShreddingSim {
   constructor() {
@@ -54,7 +73,10 @@ class ShreddingSim {
 
     const library = getScrapLibrary();
     this.ui = new ControlPanel(document.body, {
-      objectTypes: library.map((s) => ({ id: s.id, label: s.label, hint: s.hint, mass: s.mass })),
+      objectTypes: library.map((s) => ({
+        id: s.id, label: s.label, hint: s.hint, mass: s.mass,
+        value: s.value, category: s.category,
+      })),
       cameraPresets: CAMERA_PRESETS.map((p) => ({ id: p.id, label: p.label, key: p.key })),
       qualityLevels: [
         { id: 'low', label: 'Low' }, { id: 'medium', label: 'Medium' },
@@ -115,6 +137,32 @@ class ShreddingSim {
     this.vfx = new VFXDirector(this.engine.scene, this.engine.renderer, this.state.quality);
     this.camera = new CameraDirector(this.engine.camera, this.engine.renderer.domElement, this.postfx);
     this.audio = new AudioEngine();
+    this.floaters = new FloatingTextSystem(this.engine.scene, { capacity: 48 });
+
+    // ---- tycoon loop ----
+    this.game = new GameDirector({
+      onCash: (p) => this._onCash(p),
+      onStall: () => {
+        this.hud?.toast('MOTOR STALLED — hit the Jam-Buster', 'bad');
+        this.ui?.setNotice('Motor stalled', 1800);
+      },
+      onRecover: () => this.hud?.toast('Rotors clear', 'good'),
+      onContractComplete: (c) => this.hud?.toast(`Contract complete: ${c.title}`, 'good'),
+      onNotice: (n) => this.hud?.toast(n.message, n.tone),
+    });
+    this.hud = new GameHUD(document.body, {
+      onPurchase: (id) => {
+        const r = this.game.purchase(id);
+        if (!r.ok) this.hud.toast(r.reason === 'insufficient' ? 'Not enough cash' : 'Fully upgraded', 'warn');
+        this._syncHud(true);
+      },
+      onJamBuster: () => {
+        const r = this.game.triggerJamBuster();
+        if (!r.ok) this.hud.toast(r.reason === 'cooldown' ? 'Jam-Buster recharging' : 'Already running', 'warn');
+        else this.hud.toast('JAM-BUSTER ENGAGED', 'good');
+      },
+      onReverse: (on) => this._setReverse(on),
+    });
 
     this.fragments = new FragmentManager(
       this.engine.scene, this.physics, this.shredder, this._destructionHooks()
@@ -191,7 +239,41 @@ class ShreddingSim {
         if (kind === 'chop') this.audio.impact(intensity * 0.7, spec.hardness);
       },
       onDeform: () => {},
+
+      // ---- economy ----
+      onItemDestroyed: (evt) => {
+        this.game.registerItemDestroyed(evt);
+      },
+      onFragment: (evt) => {
+        this.game.registerFragment(evt);
+      },
     };
+  }
+
+  /** Cash awarded: float a 3D popup above the throat. */
+  _onCash(p) {
+    if (!p || !(p.amount > 0)) return;
+    const pos = p.position
+      ? new THREE.Vector3(p.position.x, p.position.y, p.position.z)
+      : new THREE.Vector3(...LAYOUT.throatCenter);
+    pos.y = Math.max(pos.y, LAYOUT.shaftY + 0.35);
+    const big = p.reason === 'item' || p.reason === 'contract';
+    this.floaters?.spawn(
+      `+$${p.amount.toFixed(2)}`,
+      pos,
+      {
+        color: p.reason === 'contract' ? '#ffd23f' : big ? '#7CFF9B' : '#9fe8ff',
+        scale: big ? 1.25 : 0.72,
+        life: big ? 1.6 : 1.0,
+      }
+    );
+  }
+
+  _setReverse(on) {
+    this.state.reverse = on;
+    this.physics?.setShredder({ reverse: on });
+    this.audio?.setReverse(on);
+    this.ui?.setReverse(on);
   }
 
   _uiCallbacks() {
@@ -327,18 +409,21 @@ class ShreddingSim {
   /**
    * Render one thumbnail per feed-stock item into the palette.
    *
-   * This spins up a second WebGL context, so it runs as a single batch during
-   * boot and the renderer is torn down immediately afterwards - browsers cap
-   * live contexts and the main renderer must never lose its own.
+   * This spins up a second WebGL context, so it runs as a single batch and the
+   * renderer is torn down immediately afterwards - browsers cap live contexts
+   * and the main renderer must never lose its own. Work is spread across
+   * frames so the start gate stays responsive while previews stream in.
    */
-  _buildThumbnails() {
+  async _buildThumbnails() {
     let tr = null;
     try {
       tr = new ThumbnailRenderer({ size: 112, pixelRatio: 2, envMap: this.envMap });
     } catch (e) {
       return;   // previews are a nicety; the cards degrade to their monogram
     }
-    for (const def of getScrapLibrary()) {
+    const items = getScrapLibrary();
+    for (let i = 0; i < items.length; i++) {
+      const def = items[i];
       let obj = null;
       try {
         obj = this._previewObject(def);
@@ -349,6 +434,7 @@ class ShreddingSim {
       } finally {
         obj?.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
       }
+      if ((i & 3) === 3) await nextFrame();
     }
     tr.dispose();
   }
@@ -409,9 +495,16 @@ class ShreddingSim {
     // machine
     this.shredder.update(dt, this.physics.shredderAngle, this.state.conveyor, this.state.power);
     this.fragments.rpmNorm = Math.min(1, this.physics.rpm / 42);
+    this.fragments.resistanceDivisor = this.game.resistanceDivisor;
     this.fragments.update(dt, this.engine.elapsed);
     this.vfx.update(dt);
+    this.floaters.update(dt, this.engine.camera);
     updateHeatTime(this.engine.elapsed);
+
+    // tycoon loop: strain, stalls, upgrades
+    this.game.setLoad(this.load);
+    this.game.update(rawDt);
+    this._applyMachineUpgrades();
 
     // audio bed
     if (this.audio.isRunning) {
@@ -428,9 +521,13 @@ class ShreddingSim {
     if (this.state.autoFeed) {
       this.autoFeedTimer -= dt;
       if (this.autoFeedTimer <= 0) {
-        this.autoFeedTimer = 0.9 + Math.random() * 1.1;
-        const lib = getScrapLibrary();
-        this._spawn(lib[Math.floor(Math.random() * lib.length)].id);
+        // Back off when the scene is already at its body budget, otherwise the
+        // feeder just churns bodies that get culled a moment later.
+        this.autoFeedTimer = this.fragments.atCapacity() ? 0.5 : (0.9 + Math.random() * 1.1);
+        if (!this.fragments.atCapacity()) {
+          const lib = getScrapLibrary();
+          this._spawn(lib[Math.floor(Math.random() * lib.length)].id);
+        }
       }
     }
 
@@ -438,8 +535,44 @@ class ShreddingSim {
     this.engine.endFrame(rawDt);
 
     this._updateHud(rawDt);
+    this._syncHud(false);
     this._adaptQuality(rawDt);
   };
+
+  /**
+   * Push upgrade effects and the stall state into the machine. The rotors are
+   * physically halted while stalled, which is what makes the Jam-Buster feel
+   * like it is doing something.
+   */
+  _applyMachineUpgrades() {
+    const stalled = this.game.isStalled;
+    const shouldRun = this.state.power && !stalled;
+    if (shouldRun !== this._rotorsRunning) {
+      this._rotorsRunning = shouldRun;
+      this.physics.setShredder({ enabled: shouldRun });
+    }
+
+    const beltTarget = this.state.conveyor * this.game.conveyorMultiplier;
+    if (Math.abs(beltTarget - (this._beltApplied ?? -1)) > 0.01) {
+      this._beltApplied = beltTarget;
+      this.physics.setConveyor({ speed: Math.min(1, beltTarget) });
+    }
+  }
+
+  /** HUD refresh. Cheap setters run every frame; lists only when they change. */
+  _syncHud(force) {
+    if (!this.hud) return;
+    this.hud.setCash(this.game.cash);
+    this.hud.setStrain(this.game.strain, this.game.isStalled);
+    this.hud.setJamBuster(this.game.jamBuster);
+
+    this._hudSlow = (this._hudSlow || 0) + 1;
+    if (force || this._hudSlow % 12 === 0) {
+      this.hud.setUpgrades(this.game.upgradeState);
+      this.hud.setContracts(this.game.contracts);
+      this.hud.setStats(this.game.stats);
+    }
+  }
 
   _updateHud(dt) {
     this._hudAccum = (this._hudAccum || 0) + dt;

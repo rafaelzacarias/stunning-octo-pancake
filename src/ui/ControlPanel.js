@@ -65,6 +65,15 @@ function fmtMass(mass) {
   return (mass % 1 === 0 ? mass.toFixed(0) : mass.toFixed(1)) + ' kg';
 }
 
+/** Scrap value of a feed-stock item, in dollars: `18` → `$18.00`. */
+function fmtValue(value) {
+  if (!Number.isFinite(value)) return null;
+  return '$' + value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 /**
  * Placeholder monogram for a feed-stock card whose 3D thumbnail never arrives.
  * "Aluminium Can" → "AC"; single words collapse to their first two letters.
@@ -682,6 +691,12 @@ export class ControlPanel {
       const id = String(type.id);
       const label = String(type.label ?? id);
       const mass = fmtMass(Number(type.mass));
+      const value = fmtValue(Number(type.value));
+      /* Both are optional: older stock tables carry neither, and the card must
+         still lay out correctly when they are absent. */
+      const category = type.category === undefined || type.category === null || type.category === ''
+        ? null
+        : String(type.category);
       /* Only the first ten items carry a keyboard binding. Anything without a
          `key` simply gets no badge — never a blank box or an invented number. */
       const keyLabel = type.key === undefined || type.key === null || type.key === ''
@@ -716,6 +731,16 @@ export class ControlPanel {
       });
       this._thumbs.set(id, { well, img, url: null });
 
+      const hint = type.hint ? el('span', { class: 'sio-card-hint', text: String(type.hint) }) : null;
+      const chip = category
+        ? el('span', {
+          class: 'sio-card-cat',
+          dataset: { cat: category.toLowerCase() },
+          title: category,
+          text: category.toUpperCase(),
+        })
+        : null;
+
       const main = el('button', {
         class: 'sio-card-main',
         type: 'button',
@@ -724,9 +749,12 @@ export class ControlPanel {
         well,
         el('span', { class: 'sio-card-text' }, [
           el('span', { class: 'sio-card-label', text: label }),
-          type.hint ? el('span', { class: 'sio-card-hint', text: String(type.hint) }) : null,
+          chip || hint ? el('span', { class: 'sio-card-tags' }, [chip, hint]) : null,
         ]),
-        mass ? el('span', { class: 'sio-card-mass', text: mass }) : null,
+        mass || value ? el('span', { class: 'sio-card-meta' }, [
+          mass ? el('span', { class: 'sio-card-mass', text: mass }) : null,
+          value ? el('span', { class: 'sio-card-value', text: value }) : null,
+        ]) : null,
       ]);
       this._on(main, 'click', () => this._emit('onSpawn', id));
 

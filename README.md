@@ -1,8 +1,9 @@
-# SHRED.IO — Industrial Metal Shredder Simulator
+# SHRED.IO — Industrial Metal Shredder
 
-A real-time, photoreal dual-shaft metal shredder built on Three.js and Rapier3D.
-Everything is generated procedurally in code — there are no external textures,
-HDR maps, models or audio files, and no network requests at runtime.
+A real-time, photoreal dual-shaft metal shredder built on Three.js and Rapier3D,
+wrapped in a light "Recycling Tycoon" loop. Everything is generated
+procedurally in code — there are no external textures, HDR maps, models or
+audio files, and no network requests at runtime.
 
 ```bash
 npm install
@@ -13,6 +14,27 @@ npm run build    # static bundle in dist/
 Requires WebGL 2. Click **CLICK TO INITIALIZE** to start (the Web Audio context
 needs a user gesture). The original brief is preserved in [BRIEF.md](BRIEF.md).
 
+## The loop
+
+Stock rides the conveyor into the hopper automatically. Every item you shred
+pays out, dense items strain the motor, and an overloaded motor stalls until you
+clear it. Cash buys upgrades that let you shred heavier things faster.
+
+- **Cash** — each item pays its scrap value on destruction, with a smaller
+  trickle per fragment. `+$` popups float above the throat.
+- **Motor strain** — dense stock (sledgehammer, lawnmower, engine block) drives
+  the gauge; sustained overload stalls the rotors.
+- **Jam-Buster** — a 2 s torque burst that clears a stall instantly, then a 10 s
+  cooldown. `J`, or the HUD button. Quick Reverse (`R`) also helps.
+- **Upgrades** — Motor Torque (×1 → ×2.2 cutting power), Conveyor Drive
+  (×1 → ×2 feed rate), Hardened Teeth (×1 → ×3 payout). `U` opens the shop.
+- **Contracts** — 3 active at a time from a pool of 12, e.g. *White Goods Run*,
+  *Tool Shed Clear-Out (no stall)*, *Tonnage Quota*.
+
+Measured progression: a lawnmower takes **855 frames** to process on a stock
+motor (peak strain 1.0, one stall). At maxed Motor Torque it takes **255
+frames** — **70 % faster**, peak strain 0.34, zero stalls.
+
 ---
 
 ## Controls
@@ -22,7 +44,9 @@ needs a user gesture). The original brief is preserved in [BRIEF.md](BRIEF.md).
 | `Space` | Main power on/off |
 | `R` | Reverse rotors |
 | `C` | Clear all debris |
-| `1`–`9`, `0` | Drop feed stock onto the conveyor (the remaining items are click-only) |
+| `U` | Upgrade shop |
+| `J` | Jam-Buster |
+| `1`–`9`, `0` | Drop feed stock onto the conveyor (the rest are click-only) |
 | `F1`–`F5` | Camera presets (Wide / Teeth-Eye / Top-Down / Discharge / Operator) |
 | `Tab` | Hide the interface |
 | Left-drag | Orbit · Scroll: dolly · Right-drag: pan |
@@ -34,22 +58,27 @@ impact or load-driven screen shake anywhere in the render loop.
 
 ## Feed stock
 
-Thirteen items, each with its own geometry, colliders and mechanical constants.
-The palette renders a live 3D preview of every one.
+25 items across six categories, each with its own geometry, colliders,
+mechanical constants and scrap value. The palette renders a live 3D preview of
+every one.
 
-| Key | Item | Mass | Make-up |
-|---|---|---|---|
-| 1 | Aluminium Can | 16 g | aluminium |
-| 2 | Steel Panel | 4.4 kg | galvanised sheet |
-| 3 | Steel Pipe | 5.8 kg | rusted steel |
-| 4 | Rebar Rod | 2.1 kg | rusted steel |
-| 5 | I-Beam Offcut | 15.2 kg | mild steel |
-| 6 | **Flat Screen TV** | 9.5 kg | glass · ABS · sheet steel · PCB |
-| 7 | **Sound System** | 14 kg | MDF · rubber cones · ferrite magnets · steel grille |
-| 8 | **Car Wheel** | 18 kg | rubber tyre · alloy rim |
-| 9 | **Microwave Oven** | 15 kg | enamelled steel · glass · ABS · transformer |
-| 0 | Engine Block | 62 kg | cast iron |
-| — | Tool Box / Cast Gear / Copper Radiator | 6.5 / 7.9 / 3.4 kg | painted steel · cast iron · copper |
+**Raw** — aluminium can, steel panel, steel pipe, rebar, I-beam offcut.
+**Kitchen** — blender (glass pitcher shatters, copper winding stretches),
+toaster, coffee maker, vacuum.
+**Tools** — cordless drill, sledgehammer, pipe wrench, lawnmower, car wheel,
+toolbox, cast gear, engine block.
+**Office** — keyboard (keycap clusters burst), laptop, flat-screen TV.
+**Furniture** — office chair, lawn chair, speaker.
+**Appliance** — microwave, copper radiator.
+
+Measured destruction character, one item dropped into a running throat:
+
+| Item | Slices | Behaviour |
+|---|---:|---|
+| Keyboard | 42 | 62 shrapnel bursts (keycaps popping), aluminium tray folds 28.7 mm, PCB snaps at 1.7 mm |
+| Blender | 31 | glass shatters at **0 mm** deflection, copper winding stretches **15.5 mm**, 71 shard bursts |
+| Lawnmower | 38 | pins motor strain at **1.0**, 2 633 spark events, hardened blade bends 53.2 mm, rubber wheels 16 mm |
+| Cordless drill | 36 | battery block resists and grinds; sparks off the alloy gearcase |
 
 ---
 
@@ -214,11 +243,21 @@ Two non-obvious calibrations that the visual QA pass forced:
 ### Performance
 
 Measured with `gl.finish()` on an Apple M4 Pro at 1488×837, ultra quality, 37
-fragments, 289 draw calls: **0.47 ms median GPU time per frame**. Under a full
-overload (108 fragments, 381k triangles, 643 draw calls) the app holds
-**125–140 FPS**.
+fragments, 289 draw calls: **0.47 ms median GPU time per frame**.
 
-Two things keep it there:
+The scene is held inside a hard body budget. Under sustained auto-feed at 90 %
+belt speed the ceiling holds at **101–110 bodies, ~442 k triangles, ~870 draw
+calls and ~2.9 ms physics steps**.
+
+That budget used to leak badly. `_cullOldest` exempted anything above
+`chute.topY` (0.92 m) — which is the hopper, the belt *and* the throat — so
+under auto-feed almost nothing was ever eligible for culling. A five-minute run
+reached **1 031 bodies against a budget of 110**, 2.26 M triangles, 3 489 draw
+calls and a **28-second** physics step. The exemption is now limited to bodies
+actually between the teeth, `_makeRoom()` escalates to a forced cull so the
+budget can always be honoured, and the feeder backs off at capacity.
+
+Three things keep it fast:
 
 - `GeometryBatcher` merges the factory's hundreds of static props per material.
   Each one would otherwise be a draw call in the beauty pass *and* again in
@@ -228,6 +267,30 @@ Two things keep it there:
   is far more visible than a few percent of pixels. It also climbs back up when
   there is sustained headroom, so a brief hitch during load does not park you on
   Low permanently.
+- Item previews are 25 offscreen renders; they stream in behind the start gate
+  rather than blocking boot.
+
+### A note on the "black flicker"
+
+This was investigated with a per-frame `gl.readPixels` luminance probe. The
+headline finding was the body leak above — at 3 489 draw calls and a 28 s
+physics step the tab genuinely stutters and blanks.
+
+The residual black frames the probe reported afterwards are a **measurement
+artifact, not a render bug**: they occur with only 5 bodies and 186 draw calls
+on screen, alternate cleanly (luma 60 → 0 → 60 → 0), and show identical scene
+state, `gl.isContextLost() === false` and `gl.getError() === 0` either side. A
+throttled/hidden tab has its drawing buffer cleared by the compositor between
+the render and the read-back. Rendering was hardened regardless:
+
+- the slicer sanitises every attribute and drops non-finite triangles
+  (`getSlicerStats()` exposes the counters; the scene holds **0 NaN bounding
+  spheres** across 140 meshes),
+- `PostFX.setSize` is idempotent and renderer-authoritative, and every pass is
+  resized consistently — previously GTAO/bloom/bokeh silently ran at half
+  resolution at any pixel ratio ≠ 1,
+- camera clipping is `0.1 / 100` and the key light uses `shadow.bias = -0.0005`
+  with a tightened shadow frustum.
 
 ### Audio
 

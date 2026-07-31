@@ -36,8 +36,16 @@ function createCanvas(w, h) {
 function dataToTexture(data, w, h, srgb, repeat) {
   const canvas = createCanvas(w, h);
   const ctx = canvas.getContext('2d', { willReadFrequently: false });
-  const img = ctx.createImageData(w, h);
-  img.data.set(data);
+  // The composition passes already produce a correctly sized
+  // Uint8ClampedArray, so wrap it directly rather than allocating a second
+  // 4 MB buffer per map and memcpy-ing into it (five maps per preset).
+  let img;
+  if (typeof ImageData !== 'undefined') {
+    img = new ImageData(data, w, h);
+  } else {
+    img = ctx.createImageData(w, h);
+    img.data.set(data);
+  }
   ctx.putImageData(img, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -256,24 +264,66 @@ function resampleWrap(src, sw, sh, dw, dh) {
   const out = new Float32Array(dw * dh);
   const rx = sw / dw;
   const ry = sh / dh;
+  // The column solve is identical for every row, so it is hoisted: at 1024²
+  // it was costing a floor() and two modulos per texel, on six or seven
+  // layers per preset. Same arithmetic, same order -> same bits out.
+  const colA = new Int32Array(dw);
+  const colB = new Int32Array(dw);
+  const colT = new Float64Array(dw);
+  for (let x = 0; x < dw; x++) {
+    const sx = (x + 0.5) * rx - 0.5;
+    const ix0 = Math.floor(sx);
+    colT[x] = sx - ix0;
+    colA[x] = wrapi(ix0, sw);
+    colB[x] = wrapi(ix0 + 1, sw);
+  }
+
+  // Run it separably. Bilinear factorises exactly, so horizontally resampling
+  // each SOURCE row once and then blending two of them per destination row
+  // replaces `dw*dh` four-tap scattered gathers with `dw*sh` two-tap gathers
+  // plus a fully sequential vertical blend. The two-row cache is enough
+  // because `iy0` only ever advances (the single wrap at the end refills).
+  // Intermediates stay in float64, which is what the fused form used, so the
+  // result is bit-identical.
+  const bufA = new Float64Array(dw);
+  const bufB = new Float64Array(dw);
+  let top = bufA;
+  let bot = bufB;
+  let rowTop = -1;
+  let rowBot = -1;
+
+  const fill = (buf, sy) => {
+    const base = sy * sw;
+    for (let x = 0; x < dw; x++) {
+      buf[x] = lerp(src[base + colA[x]], src[base + colB[x]], colT[x]);
+    }
+  };
+
   for (let y = 0; y < dh; y++) {
     const sy = (y + 0.5) * ry - 0.5;
     const iy0 = Math.floor(sy);
     const ty = sy - iy0;
-    const y0 = wrapi(iy0, sh) * sw;
-    const y1 = wrapi(iy0 + 1, sh) * sw;
+    const s0 = wrapi(iy0, sh);
+    const s1 = wrapi(iy0 + 1, sh);
+
+    if (rowTop !== s0) {
+      if (rowBot === s0) {
+        const t = top; top = bot; bot = t;
+        rowTop = rowBot;
+        rowBot = -1;
+      } else {
+        fill(top, s0);
+        rowTop = s0;
+      }
+    }
+    if (rowBot !== s1) {
+      fill(bot, s1);
+      rowBot = s1;
+    }
+
     const row = y * dw;
     for (let x = 0; x < dw; x++) {
-      const sx = (x + 0.5) * rx - 0.5;
-      const ix0 = Math.floor(sx);
-      const tx = sx - ix0;
-      const x0 = wrapi(ix0, sw);
-      const x1 = wrapi(ix0 + 1, sw);
-      const a = src[y0 + x0];
-      const b = src[y0 + x1];
-      const c = src[y1 + x0];
-      const d = src[y1 + x1];
-      out[row + x] = lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+      out[row + x] = lerp(top[x], bot[x], ty);
     }
   }
   return out;
@@ -302,22 +352,51 @@ function boxBlurWrap(src, w, h, r) {
   const out = new Float32Array(w * h);
   const inv = 1 / (r * 2 + 1);
 
+  // Wrap tables, hoisted for the same reason as in resampleWrap: the running
+  // sums were paying two modulos per texel per axis.
+  const addX = new Int32Array(w);
+  const subX = new Int32Array(w);
+  for (let x = 0; x < w; x++) {
+    addX[x] = wrapi(x + r + 1, w);
+    subX[x] = wrapi(x - r, w);
+  }
   for (let y = 0; y < h; y++) {
     const row = y * w;
     let sum = 0;
     for (let k = -r; k <= r; k++) sum += src[row + wrapi(k, w)];
     for (let x = 0; x < w; x++) {
       tmp[row + x] = sum * inv;
-      sum += src[row + wrapi(x + r + 1, w)] - src[row + wrapi(x - r, w)];
+      sum += src[row + addX[x]] - src[row + subX[x]];
     }
   }
 
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let k = -r; k <= r; k++) sum += tmp[wrapi(k, h) * w + x];
+  const addY = new Int32Array(h);
+  const subY = new Int32Array(h);
+  for (let y = 0; y < h; y++) {
+    addY[y] = wrapi(y + r + 1, h) * w;
+    subY[y] = wrapi(y - r, h) * w;
+  }
+  // Column pass, blocked. Walking one column at a time strides a full row
+  // (4 KB at 1024²) per step and misses cache on every read; carrying 16
+  // running sums at once turns it back into a linear sweep. The per-column
+  // accumulation order is unchanged, so the result is bit-identical.
+  const BLK = 16;
+  const sums = new Float64Array(BLK);
+  for (let x0 = 0; x0 < w; x0 += BLK) {
+    const bw = Math.min(BLK, w - x0);
+    for (let b = 0; b < bw; b++) sums[b] = 0;
+    for (let k = -r; k <= r; k++) {
+      const row = wrapi(k, h) * w + x0;
+      for (let b = 0; b < bw; b++) sums[b] += tmp[row + b];
+    }
     for (let y = 0; y < h; y++) {
-      out[y * w + x] = sum * inv;
-      sum += tmp[wrapi(y + r + 1, h) * w + x] - tmp[wrapi(y - r, h) * w + x];
+      const orow = y * w + x0;
+      const arow = addY[y] + x0;
+      const srow = subY[y] + x0;
+      for (let b = 0; b < bw; b++) {
+        out[orow + b] = sums[b] * inv;
+        sums[b] += tmp[arow + b] - tmp[srow + b];
+      }
     }
   }
   return out;
@@ -512,22 +591,28 @@ function stampScratches(dst, w, h, opts) {
  */
 function heightToNormalData(height, w, h, strength) {
   const out = new Uint8ClampedArray(w * h * 4);
+  const xm = new Int32Array(w);
+  const xp = new Int32Array(w);
+  for (let x = 0; x < w; x++) {
+    xm[x] = wrapi(x - 1, w);
+    xp[x] = wrapi(x + 1, w);
+  }
   for (let y = 0; y < h; y++) {
     const rm = wrapi(y - 1, h) * w;
     const r0 = y * w;
     const rp = wrapi(y + 1, h) * w;
     for (let x = 0; x < w; x++) {
-      const xm = wrapi(x - 1, w);
-      const xp = wrapi(x + 1, w);
+      const xa = xm[x];
+      const xb = xp[x];
 
-      const h00 = height[rm + xm];
+      const h00 = height[rm + xa];
       const h10 = height[rm + x];
-      const h20 = height[rm + xp];
-      const h01 = height[r0 + xm];
-      const h21 = height[r0 + xp];
-      const h02 = height[rp + xm];
+      const h20 = height[rm + xb];
+      const h01 = height[r0 + xa];
+      const h21 = height[r0 + xb];
+      const h02 = height[rp + xa];
       const h12 = height[rp + x];
-      const h22 = height[rp + xp];
+      const h22 = height[rp + xb];
 
       const dx = h20 + 2 * h21 + h22 - (h00 + 2 * h01 + h02);
       const dy = h02 + 2 * h12 + h22 - (h00 + 2 * h10 + h20);
@@ -596,6 +681,16 @@ const ZINC_PAL = {
   mid: linRGB([148, 147, 142]),
   light: linRGB([172, 160, 138]),
   bloom: linRGB([188, 178, 158]),
+};
+
+/* Nickel-chrome heater alloy does not rust, it grows a tight dark oxide
+ * skin. Same four-stop contract as the corrosion palettes so it can be
+ * dropped straight into the `rust` slot of the metal pass. */
+const NICHROME_OXIDE_PAL = {
+  dark: linRGB([44, 42, 39]),
+  mid: linRGB([72, 68, 62]),
+  light: linRGB([102, 96, 87]),
+  bloom: linRGB([130, 120, 105]),
 };
 
 /**
@@ -682,6 +777,38 @@ const PRESETS = {
     grain: 0.04, pitting: 0.06, spangle: false,
     paint: { rough: 0.31, coverage: 0.965, color: 'white' }, pal: RUST_PAL,
   },
+  /* Decorative chrome plate: toaster shells, chair columns, wrench flats.
+   * The highest F0 in the library and almost no grain — what sells it is
+   * the failure mode, a fine pitting field where the plating has lifted and
+   * the steel underneath has bloomed through the pinholes. */
+  chrome: {
+    colA: [0.836, 0.850, 0.878], colB: [0.706, 0.718, 0.748],
+    scratchCol: [0.962, 0.970, 0.988],
+    roughBase: 0.25, roughVar: 0.045, metalBase: 0.995,
+    rust: 0.09, scratches: 0.30,
+    grain: 0.030, pitting: 0.32, spangle: false, paint: null, pal: RUST_PAL,
+  },
+  /* Nichrome heating element: dull, dark, heavily oxidised ribbon that has
+   * been cycled to red heat a few thousand times. Very low F0 for a metal,
+   * high roughness, and pitting everywhere the scale has flaked. */
+  nichrome: {
+    colA: [0.300, 0.292, 0.278], colB: [0.206, 0.200, 0.190],
+    scratchCol: [0.470, 0.460, 0.444],
+    roughBase: 0.52, roughVar: 0.080, metalBase: 0.97,
+    rust: 0.32, scratches: 0.18,
+    grain: 0.10, pitting: 0.48, spangle: false, paint: null, pal: NICHROME_OXIDE_PAL,
+  },
+  /* Enamelled magnet wire wound onto a stator. The strongly anisotropic
+   * grain term is doing the real work here: at grain 0.30 the directional
+   * streaks read as the individual turns of the winding rather than as a
+   * brushed finish. */
+  copperWinding: {
+    colA: [0.720, 0.360, 0.180], colB: [0.512, 0.238, 0.110],
+    scratchCol: [1.000, 0.660, 0.420],
+    roughBase: 0.29, roughVar: 0.050, metalBase: 0.99,
+    rust: 0.08, scratches: 0.22,
+    grain: 0.30, pitting: 0.05, spangle: false, paint: null, pal: PATINA_PAL,
+  },
 };
 
 /* Industrial machine enamels, linear. `grey` is a genuine neutral
@@ -726,6 +853,37 @@ const PCB_PAL = {
 const RUBBER_BLOOM = linRGB([74, 71, 66]);
 const FERRITE_FRESH = linRGB([104, 102, 106]);
 
+/* Brittle white/beige injection mouldings: garden furniture, keycaps,
+ * toaster end caps. Three ageing signatures carry the read — broad UV
+ * yellowing, grime driven into the spark-eroded moulding texture, and the
+ * hairline stress crazing that is the reason the stuff snaps. */
+const HARD_PLASTIC_PAL = {
+  base: linRGB([224, 220, 208]),
+  yellowed: linRGB([198, 182, 142]),
+  grime: linRGB([118, 114, 102]),
+  craze: linRGB([246, 246, 244]),
+};
+
+/* Upholstery / mesh weave. `gap` is what shows through the aperture at the
+ * centre of four crossings and has to be much darker than either yarn, or
+ * the weave reads as an embossed sheet instead of a cloth. */
+const FABRIC_PAL = {
+  warp: linRGB([70, 72, 78]),
+  weft: linRGB([54, 56, 62]),
+  gap: linRGB([11, 11, 13]),
+  fuzz: linRGB([124, 126, 132]),
+  soil: linRGB([40, 36, 31]),
+};
+
+/* Hickory/ash tool handle: pale open-pored timber under a thin oil finish,
+ * a world away from the dark lacquered veneer of the speaker cabinet. */
+const TIMBER_PAL = {
+  early: linRGB([198, 162, 114]),
+  late: linRGB([126, 90, 53]),
+  pore: linRGB([72, 48, 27]),
+  grime: linRGB([62, 50, 38]),
+};
+
 /**
  * `kind`          selects the composition pass
  * `base`          LINEAR albedo of the intact surface
@@ -764,6 +922,24 @@ const DIELECTRIC_PRESETS = {
     kind: 'ceramic', base: [0.0166, 0.0161, 0.0169],
     roughBase: 0.56, scratches: 0.25,
     normalStrength: 3.0, aoStrength: 1.6, microRes: 384,
+  },
+  hardPlastic: {
+    kind: 'hardPlastic', base: HARD_PLASTIC_PAL.base,
+    roughBase: 0.42, scratches: 0.40,
+    normalStrength: 2.4, aoStrength: 1.2, microRes: 256,
+  },
+  /* `threads` is threads per tile and MUST be an integer, otherwise the
+   * weave lattice does not close across the seam. */
+  fabric: {
+    kind: 'fabric', base: FABRIC_PAL.warp,
+    roughBase: 0.86, scratches: 0.0,
+    normalStrength: 2.6, aoStrength: 1.8, microRes: 384,
+    threads: 44,
+  },
+  wood: {
+    kind: 'timber', base: TIMBER_PAL.early,
+    roughBase: 0.48, scratches: 0.35,
+    normalStrength: 2.6, aoStrength: 1.4, microRes: 256,
   },
 };
 
@@ -1685,6 +1861,267 @@ function composeCeramic(c) {
   }
 }
 
+/**
+ * Brittle white/beige injection moulding.
+ *
+ * Deliberately NOT a recolour of the ABS pass: that one is authored around a
+ * near-black body where the only luminance cue is the pebble grain, and its
+ * hard-coded scuff colour would paint dark streaks across a white part. Here
+ * the surface starts bright, so every feature has to darken or tint instead.
+ */
+function composeHardPlastic(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const base = P.base;
+
+  // Spark-eroded mould texture: much tighter and shallower than the leather
+  // grain on a bezel — it reads as a matte finish, not as a pattern.
+  const GR = Math.min(size, 256);
+  const wl = worleyLayer(GR, GR, { cells: 58, seed: seed * 59 + 3, jitter: 1.0 });
+  const f1 = resampleWrap(wl.f1, GR, GR, size, size);
+  const cid = resampleNearest(wl.id, GR, GR, size, size);
+
+  const rnd = mulberry32(hash2i(size, seed, 0x3f19c7));
+  // Stress crazing: very short, very fine, near-white hairlines. This is the
+  // signature of plastic that is about to let go, and the reason this
+  // material bursts instead of tearing.
+  const craze = new Float32Array(N);
+  stampScratches(craze, size, size, {
+    rnd, count: Math.round(size * 0.34 * P.scratches) + 24, angle: 0.9, jitter: Math.PI,
+    minLen: size * 0.008, maxLen: size * 0.09,
+    halfWidth: 0.5, intensity: 0.9, wobble: size / 1500,
+  });
+  const scuff = new Float32Array(N);
+  stampScratches(scuff, size, size, {
+    rnd, count: Math.round(size * 0.14 * P.scratches) + 10, angle: 0.2, jitter: Math.PI,
+    minLen: size * 0.03, maxLen: size * 0.30,
+    halfWidth: 1.2, intensity: 0.55, wobble: size / 520,
+  });
+
+  const yellowCut = coverageCut(mottle, 0.45, 0.55);
+  const grimeCut = coverageCutFn(N, (i) => meso[i] * 0.6 + micro[i] * 0.4, 0.30, 0.35);
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+    const cz = craze[i];
+    const sc = scuff[i];
+
+    const cell = f1[i];
+    const dome = 1 - smoothstep(0.05, 0.55, cell);
+    const facet = 0.97 + cid[i] * 0.06;
+    const shade = facet * (1 - dome * 0.055) * (1 + (mi - 0.5) * 0.05);
+
+    const yellow = smoothstep(yellowCut.t0, yellowCut.t1, mo);
+    // Dirt collects in the valleys of the moulding texture, never on the domes.
+    const grime = smoothstep(grimeCut.t0, grimeCut.t1, me * 0.6 + mi * 0.4)
+      * (0.35 + 0.65 * smoothstep(0.25, 0.85, cell));
+
+    let r = base[0] * shade;
+    let g = base[1] * shade;
+    let b = base[2] * shade;
+    r = lerp(r, HARD_PLASTIC_PAL.yellowed[0], yellow * 0.55);
+    g = lerp(g, HARD_PLASTIC_PAL.yellowed[1], yellow * 0.55);
+    b = lerp(b, HARD_PLASTIC_PAL.yellowed[2], yellow * 0.55);
+    r = lerp(r, HARD_PLASTIC_PAL.grime[0], grime * 0.42 + sc * 0.26);
+    g = lerp(g, HARD_PLASTIC_PAL.grime[1], grime * 0.42 + sc * 0.26);
+    b = lerp(b, HARD_PLASTIC_PAL.grime[2], grime * 0.42 + sc * 0.26);
+    r = lerp(r, HARD_PLASTIC_PAL.craze[0], cz * 0.55);
+    g = lerp(g, HARD_PLASTIC_PAL.craze[1], cz * 0.55);
+    b = lerp(b, HARD_PLASTIC_PAL.craze[2], cz * 0.55);
+
+    const ro = P.roughBase + dome * 0.10 + grime * 0.14 + sc * 0.11 + cz * 0.07
+      + (me - 0.5) * 0.05 + (mi - 0.5) * 0.04;
+    const hh = 0.5 - dome * 0.012 + (mi - 0.5) * 0.005 - cz * 0.011 - sc * 0.004;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.12, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
+/* One period of the yarn cross-section, sampled 256 ways. The weave pass
+ * evaluates two of these per texel; a LUT keeps 1024² off the sin() path. */
+const WEAVE_PROFILE = new Float32Array(257);
+for (let i = 0; i <= 256; i++) WEAVE_PROFILE[i] = Math.sin((i / 256) * Math.PI);
+
+/**
+ * Plain-weave upholstery / mesh.
+ *
+ * The lattice is analytic rather than noise-derived: at each texel we know
+ * which yarn is on top (warp floats over weft on alternate crossings), how
+ * far across that yarn we are, and therefore its height. The aperture at the
+ * centre of four crossings is what makes it read as cloth rather than as an
+ * embossed sheet, so it is opened up explicitly and darkened hard.
+ *
+ * `threads` must be an integer for the lattice to wrap.
+ */
+function composeFabric(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+  const threads = Math.max(8, Math.round(P.threads || 44));
+  const step = threads / size;
+
+  // Per-yarn tone. Real upholstery yarn is never one colour, and without
+  // this the weave collapses into a regular checkerboard.
+  const warpTone = new Float32Array(threads);
+  const weftTone = new Float32Array(threads);
+  for (let i = 0; i < threads; i++) {
+    warpTone[i] = 0.82 + (hash2i(i, 17, seed) / 4294967296) * 0.36;
+    weftTone[i] = 0.82 + (hash2i(23, i, seed) / 4294967296) * 0.36;
+  }
+
+  const soilCut = coverageCut(mottle, 0.34, 0.5);
+
+  for (let y = 0; y < size; y++) {
+    const fv = y * step;
+    const iv = fv | 0;
+    const pv = WEAVE_PROFILE[((fv - iv) * 256) | 0];
+    const row = y * size;
+    const wt = weftTone[iv % threads];
+    for (let x = 0; x < size; x++) {
+      const i = row + x;
+      const fu = x * step;
+      const iu = fu | 0;
+      const pu = WEAVE_PROFILE[((fu - iu) * 256) | 0];
+
+      const warpOver = ((iu + iv) & 1) === 0;
+      const hWarp = pu * (warpOver ? 1.0 : 0.44);
+      const hWeft = pv * (warpOver ? 0.44 : 1.0);
+      const onWarp = hWarp >= hWeft;
+      const cover = onWarp ? hWarp : hWeft;
+      const openness = 1 - smoothstep(0.05, 0.32, hWarp > hWeft ? hWarp : hWeft);
+
+      const mi = micro[i];
+      const me = meso[i];
+      const mo = mottle[i];
+      // Fibre fuzz: the halo of broken filaments standing off the yarn.
+      const fuzz = smoothstep(0.62, 0.98, mi) * (0.4 + 0.6 * cover);
+      const soil = smoothstep(soilCut.t0, soilCut.t1, mo) * (0.4 + 0.6 * me);
+
+      const yarn = onWarp ? FABRIC_PAL.warp : FABRIC_PAL.weft;
+      const tone = (onWarp ? warpTone[iu % threads] : wt)
+        * (0.72 + 0.42 * cover) * (1 + (me - 0.5) * 0.10);
+      let r = yarn[0] * tone;
+      let g = yarn[1] * tone;
+      let b = yarn[2] * tone;
+      r = lerp(r, FABRIC_PAL.gap[0], openness * 0.92);
+      g = lerp(g, FABRIC_PAL.gap[1], openness * 0.92);
+      b = lerp(b, FABRIC_PAL.gap[2], openness * 0.92);
+      r = lerp(r, FABRIC_PAL.fuzz[0], fuzz * 0.16);
+      g = lerp(g, FABRIC_PAL.fuzz[1], fuzz * 0.16);
+      b = lerp(b, FABRIC_PAL.fuzz[2], fuzz * 0.16);
+      r = lerp(r, FABRIC_PAL.soil[0], soil * 0.30);
+      g = lerp(g, FABRIC_PAL.soil[1], soil * 0.30);
+      b = lerp(b, FABRIC_PAL.soil[2], soil * 0.30);
+
+      // Filaments lying along the crown of a yarn catch a little light;
+      // everything else is as diffuse as it gets. The sheen lobe on the
+      // material does the rest.
+      const ro = P.roughBase - cover * 0.09 + openness * 0.08 + fuzz * 0.05
+        + soil * 0.03 + (mi - 0.5) * 0.04;
+      const hh = 0.5 + (cover - 0.55) * 0.09 - openness * 0.022 + (mi - 0.5) * 0.004;
+
+      const o = i * 4;
+      color[o] = encodeSRGB(r);
+      color[o + 1] = encodeSRGB(g);
+      color[o + 2] = encodeSRGB(b);
+      color[o + 3] = 255;
+      const rv = clamp(ro, 0.42, 1) * 255;
+      rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+      metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+      height[i] = clamp01(hh);
+    }
+  }
+}
+
+/**
+ * Solid timber tool handle.
+ *
+ * Separate from the veneer pass on purpose. A handle is turned from the log,
+ * so the grain runs along the axis — which on a cylinder is V, the transpose
+ * of the flat-sawn veneer layout — and it carries an oil finish, open pores,
+ * hammer dings and a dark sweat/grime band where it is gripped.
+ */
+function composeTimber(c) {
+  const { size, seed, N, mottle, meso, micro, color, rough, metal, height } = c;
+  const P = c.P;
+
+  const GH = Math.max(32, size >> 3);
+  const MID = Math.min(size, 256);
+  const grain = resampleWrap(
+    fbmLayer(size, GH, { freqX: 24, freqY: 3, octaves: 4, gain: 0.55, seed: seed * 19 + 7 }),
+    size, GH, size, size,
+  );
+  const bands = resampleWrap(
+    fbmLayer(size, GH, { freqX: 11, freqY: 2, octaves: 3, gain: 0.5, ridged: true, seed: seed * 43 + 29, warp: 0.04, warpFreq: 3 }),
+    size, GH, size, size,
+  );
+  const pores = resampleWrap(
+    fbmLayer(size, MID, { freqX: 84, freqY: 22, octaves: 2, gain: 0.5, seed: seed * 71 + 37 }),
+    size, MID, size, size,
+  );
+  const poreCut = coverageCut(pores, 0.14, 0.20);
+
+  const rnd = mulberry32(hash2i(size, seed, 0x6ad11f));
+  // Dings from missed strikes: short, deep and across the grain.
+  const dings = new Float32Array(N);
+  stampScratches(dings, size, size, {
+    rnd, count: Math.round(size * 0.10 * P.scratches) + 8, angle: Math.PI * 0.5, jitter: 0.7,
+    minLen: size * 0.01, maxLen: size * 0.08,
+    halfWidth: 1.9, intensity: 0.85, wobble: size / 700,
+  });
+  const gripCut = coverageCut(meso, 0.30, 0.45);
+
+  for (let i = 0; i < N; i++) {
+    const mo = mottle[i];
+    const me = meso[i];
+    const mi = micro[i];
+    const gr = grain[i];
+    const bd = bands[i];
+    const dg = dings[i];
+    const pore = smoothstep(poreCut.t0, poreCut.t1, pores[i]) * (0.35 + 0.65 * bd);
+    const grip = smoothstep(gripCut.t0, gripCut.t1, me) * (0.4 + 0.6 * mo);
+
+    const late = clamp01(bd * 0.62 + (gr - 0.5) * 0.95 + 0.10);
+    let r = lerp(TIMBER_PAL.early[0], TIMBER_PAL.late[0], late);
+    let g = lerp(TIMBER_PAL.early[1], TIMBER_PAL.late[1], late);
+    let b = lerp(TIMBER_PAL.early[2], TIMBER_PAL.late[2], late);
+
+    r = lerp(r, TIMBER_PAL.pore[0], pore * 0.85);
+    g = lerp(g, TIMBER_PAL.pore[1], pore * 0.85);
+    b = lerp(b, TIMBER_PAL.pore[2], pore * 0.85);
+    // Hand grime darkens the field and kills what gloss the oil finish has.
+    r = lerp(r, TIMBER_PAL.grime[0], grip * 0.34 + dg * 0.22);
+    g = lerp(g, TIMBER_PAL.grime[1], grip * 0.34 + dg * 0.22);
+    b = lerp(b, TIMBER_PAL.grime[2], grip * 0.34 + dg * 0.22);
+
+    const tone = 0.95 + (mo - 0.5) * 0.14 + (mi - 0.5) * 0.08;
+    r *= tone; g *= tone; b *= tone;
+
+    const ro = P.roughBase + pore * 0.24 + grip * 0.10 + dg * 0.12
+      + late * 0.04 + (me - 0.5) * 0.06;
+    const hh = 0.5 - pore * 0.030 - dg * 0.040 - late * 0.010 + (gr - 0.5) * 0.008;
+
+    const o = i * 4;
+    color[o] = encodeSRGB(r);
+    color[o + 1] = encodeSRGB(g);
+    color[o + 2] = encodeSRGB(b);
+    color[o + 3] = 255;
+    const rv = clamp(ro, 0.20, 1) * 255;
+    rough[o] = rv; rough[o + 1] = rv; rough[o + 2] = rv; rough[o + 3] = 255;
+    metal[o] = 0; metal[o + 1] = 0; metal[o + 2] = 0; metal[o + 3] = 255;
+    height[i] = clamp01(hh);
+  }
+}
+
 function buildSurfaceMaps(preset, cfg) {
   const P = DIELECTRIC_PRESETS[preset];
   const size = cfg.size;
@@ -1718,8 +2155,11 @@ function buildSurfaceMaps(preset, cfg) {
 
   switch (P.kind) {
     case 'plastic': composePlastic(ctx); break;
+    case 'hardPlastic': composeHardPlastic(ctx); break;
     case 'rubber': composeRubber(ctx); break;
+    case 'fabric': composeFabric(ctx); break;
     case 'wood': composeWood(ctx); break;
+    case 'timber': composeTimber(ctx); break;
     case 'pcb': composePCB(ctx); break;
     case 'ceramic': composeCeramic(ctx); break;
     default: composeGlass(ctx); break;
@@ -2064,11 +2504,11 @@ function buildFloorMaps(cfg) {
  * evicts the cache entry.
  *
  * Metal presets run the corrosion/paint/spangle pipeline; the dielectric
- * presets (`glass`, `abs`, `rubber`, `mdf`, `pcb`, `ferrite`) run their own
- * composition pass and return a flat-zero metalness map — except `pcb`,
- * whose tinned pads are genuinely metallic.
+ * presets (`glass`, `abs`, `hardPlastic`, `rubber`, `fabric`, `mdf`, `wood`,
+ * `pcb`, `ferrite`) run their own composition pass and return a flat-zero
+ * metalness map — except `pcb`, whose tinned pads are genuinely metallic.
  *
- * @param {'steel'|'aluminum'|'castIron'|'galvanized'|'copper'|'paintedSteel'|'rustedSteel'|'alloy'|'applianceSteel'|'glass'|'abs'|'rubber'|'mdf'|'pcb'|'ferrite'} preset
+ * @param {'steel'|'aluminum'|'castIron'|'galvanized'|'copper'|'paintedSteel'|'rustedSteel'|'alloy'|'applianceSteel'|'chrome'|'nichrome'|'copperWinding'|'glass'|'abs'|'hardPlastic'|'rubber'|'fabric'|'mdf'|'wood'|'pcb'|'ferrite'} preset
  * @param {object} [options]
  * @param {number} [options.size=1024] Square texture resolution.
  * @param {number} [options.seed=1] PRNG seed; changes every feature layout.

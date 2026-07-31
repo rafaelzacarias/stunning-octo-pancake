@@ -14,9 +14,41 @@ import * as THREE from 'three';
  */
 
 const EPS = 1e-7;
+// Below this the plane-intersection denominator carries no usable information:
+// dividing by it produces |s| >> 1 or a NaN, which then poisons the fragment.
+const DENOM_EPS = 1e-12;
+// Squared length under which a normal counts as degenerate.
+const NORMAL_EPS2 = 1e-12;
 
 const _u = new THREE.Vector3();
 const _v = new THREE.Vector3();
+
+/**
+ * Sanitation counters. A single NaN vertex makes a whole draw call's bounding
+ * sphere NaN (silently culling the object) and, once rasterised, spreads
+ * frame-wide through the bloom/GTAO blurs and blacks out the entire frame.
+ * These counters exist so a test can assert the slicer never emits one.
+ *
+ *  droppedTriangles — triangles discarded for a non-finite position/uv/heat
+ *  nullGeometries   — halves that sanitised down to nothing (caller gets null)
+ *  nonFiniteFixes   — in-place repairs: clamped/skipped intersection
+ *                     parameters and rebuilt degenerate normals
+ */
+const SLICER_STATS = { droppedTriangles: 0, nullGeometries: 0, nonFiniteFixes: 0 };
+
+export function getSlicerStats() {
+  return {
+    droppedTriangles: SLICER_STATS.droppedTriangles,
+    nullGeometries: SLICER_STATS.nullGeometries,
+    nonFiniteFixes: SLICER_STATS.nonFiniteFixes,
+  };
+}
+
+export function resetSlicerStats() {
+  SLICER_STATS.droppedTriangles = 0;
+  SLICER_STATS.nullGeometries = 0;
+  SLICER_STATS.nonFiniteFixes = 0;
+}
 
 /** Deterministic hash -> [-1,1]; identical for both halves of a cut. */
 function hash31(x, y, z) {
@@ -44,14 +76,119 @@ class VertexSink {
     this.heatT.push(ht);
   }
   get count() { return this.heat.length; }
+
+  /**
+   * Sanitising builder — runs up to `maxSlicesPerFrame` times per frame, so it
+   * is a single linear pass with no per-vertex allocation.
+   *
+   *  - a triangle with any non-finite position / uv / heat component is DROPPED
+   *    (that data cannot be repaired, and one NaN vertex poisons the whole draw)
+   *  - a degenerate normal (zero length or non-finite) is REBUILT from the face
+   *    normal — positions are already proven finite at that point, so the
+   *    triangle stays visible instead of leaving a hole in the fragment
+   *  - bounding volumes are computed here from the surviving, finite vertices,
+   *    so `boundingSphere` can never come out NaN
+   *
+   * Compaction is in place: the write cursor never overtakes the read cursor.
+   */
   build() {
-    if (this.count < 3) return null;
+    const triCount = (this.count / 3) | 0;
+    if (triCount === 0) { SLICER_STATS.nullGeometries++; return null; }
+
+    const pos = this.pos, nrm = this.nrm, uv = this.uv, heat = this.heat, heatT = this.heatT;
+    let w = 0;   // write cursor, in vertices
+
+    for (let t = 0; t < triCount; t++) {
+      const v = t * 3;
+      const p = v * 3;     // position / normal base (stride 3)
+      const q = v * 2;     // uv base (stride 2)
+
+      let ok = true;
+      for (let k = 0; k < 9; k++) if (!Number.isFinite(pos[p + k])) { ok = false; break; }
+      if (ok) for (let k = 0; k < 6; k++) if (!Number.isFinite(uv[q + k])) { ok = false; break; }
+      if (ok) for (let k = 0; k < 3; k++) {
+        if (!Number.isFinite(heat[v + k]) || !Number.isFinite(heatT[v + k])) { ok = false; break; }
+      }
+      if (!ok) { SLICER_STATS.droppedTriangles++; continue; }
+
+      // Repair degenerate normals from the face normal (computed lazily: the
+      // common case never touches this).
+      let faceX = 0, faceY = 0, faceZ = 0, faceDone = false;
+      for (let k = 0; k < 3; k++) {
+        const n = p + k * 3;
+        const nx = nrm[n], ny = nrm[n + 1], nz = nrm[n + 2];
+        const len2 = nx * nx + ny * ny + nz * nz;
+        if (len2 > NORMAL_EPS2 && Number.isFinite(len2)) continue;
+        if (!faceDone) {
+          const e1x = pos[p + 3] - pos[p], e1y = pos[p + 4] - pos[p + 1], e1z = pos[p + 5] - pos[p + 2];
+          const e2x = pos[p + 6] - pos[p], e2y = pos[p + 7] - pos[p + 1], e2z = pos[p + 8] - pos[p + 2];
+          const cx = e1y * e2z - e1z * e2y;
+          const cy = e1z * e2x - e1x * e2z;
+          const cz = e1x * e2y - e1y * e2x;
+          const l = Math.sqrt(cx * cx + cy * cy + cz * cz);
+          if (l > 1e-12) { faceX = cx / l; faceY = cy / l; faceZ = cz / l; }
+          else { faceX = 0; faceY = 1; faceZ = 0; }   // sliver: any unit vector will do
+          faceDone = true;
+        }
+        nrm[n] = faceX; nrm[n + 1] = faceY; nrm[n + 2] = faceZ;
+        SLICER_STATS.nonFiniteFixes++;
+      }
+
+      if (w !== v) {
+        const dp = w * 3, dq = w * 2;
+        for (let k = 0; k < 9; k++) { pos[dp + k] = pos[p + k]; nrm[dp + k] = nrm[p + k]; }
+        for (let k = 0; k < 6; k++) uv[dq + k] = uv[q + k];
+        for (let k = 0; k < 3; k++) { heat[w + k] = heat[v + k]; heatT[w + k] = heatT[v + k]; }
+      }
+      w += 3;
+    }
+
+    if (w < 3) { SLICER_STATS.nullGeometries++; return null; }
+
+    if (w !== triCount * 3) {
+      pos.length = w * 3; nrm.length = w * 3; uv.length = w * 2;
+      heat.length = w; heatT.length = w;
+    }
+
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.setAttribute('aHeat', new THREE.Float32BufferAttribute(this.heat, 1));
-    g.setAttribute('aHeatT', new THREE.Float32BufferAttribute(this.heatT, 1));
+    const posAttr = new THREE.Float32BufferAttribute(pos, 3);
+    g.setAttribute('position', posAttr);
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('aHeat', new THREE.Float32BufferAttribute(heat, 1));
+    g.setAttribute('aHeatT', new THREE.Float32BufferAttribute(heatT, 1));
+
+    // Bounding volumes from the float32 data that actually reaches the GPU.
+    // Doing it here rather than via computeBoundingSphere() keeps three from
+    // logging "Computed radius is NaN" and guarantees the object is never
+    // culled by a poisoned sphere.
+    const a = posAttr.array;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < a.length; i += 3) {
+      const x = a[i], y = a[i + 1], z = a[i + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5, cz = (minZ + maxZ) * 0.5;
+    let maxR2 = 0;
+    for (let i = 0; i < a.length; i += 3) {
+      const dx = a[i] - cx, dy = a[i + 1] - cy, dz = a[i + 2] - cz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > maxR2) maxR2 = d2;
+    }
+    const radius = Math.sqrt(maxR2);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz) || !Number.isFinite(radius)) {
+      // Unreachable given the per-triangle filter above; bail rather than hand
+      // the renderer a geometry that would vanish or blow up the frame.
+      g.dispose();
+      SLICER_STATS.nullGeometries++;
+      return null;
+    }
+    g.boundingBox = new THREE.Box3(new THREE.Vector3(minX, minY, minZ), new THREE.Vector3(maxX, maxY, maxZ));
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), radius);
+
     return g;
   }
 }
@@ -166,7 +303,14 @@ export function sliceGeometry(geometry, normal, constant, opts = {}) {
       if (dc <= 0) { polyB.set(poly.subarray(ci, ci + VSTRIDE), nb * VSTRIDE); nb++; }
 
       if ((dc > 0 && dn < 0) || (dc < 0 && dn > 0)) {
-        const s = dc / (dc - dn);
+        // The sign test guarantees a mathematical root, but the denominator can
+        // still be denormal-small (near-coplanar sliver) — dividing by it emits
+        // an intersection metres away from the edge, or a NaN outright.
+        const den = dc - dn;
+        if (!(Math.abs(den) > DENOM_EPS)) { SLICER_STATS.nonFiniteFixes++; continue; }
+        let s = dc / den;
+        if (!(s >= 0)) { s = 0; SLICER_STATS.nonFiniteFixes++; }        // catches NaN too
+        else if (s > 1) { s = 1; SLICER_STATS.nonFiniteFixes++; }
         // exact intersection on the plane
         const ix = poly[ci] + (poly[ni] - poly[ci]) * s;
         const iy = poly[ci + 1] + (poly[ni + 1] - poly[ci + 1]) * s;

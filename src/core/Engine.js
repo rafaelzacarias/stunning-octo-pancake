@@ -35,7 +35,12 @@ export class Engine {
     this.scene = new THREE.Scene();
     this.scene.matrixWorldAutoUpdate = true;
 
-    this.camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 220);
+    // Clip planes are as tight as the content allows: the room is 28 x 32 x 8.4
+    // and the orbit rig never gets further than 24 m from its target, so the
+    // longest sight line is ~45 m. Going from 0.05-220 to 0.1-100 cuts the
+    // far/near ratio from 4400 to 1000, which is what keeps GTAO, DoF and the
+    // shadow comparisons from banding on the cutter teeth.
+    this.camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
     this.camera.position.set(3.6, 2.5, 4.4);
 
     this.clock = new THREE.Clock();
@@ -61,8 +66,10 @@ export class Engine {
   }
 
   resize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    // A minimised window reports 0: 0/0 is NaN, and a NaN projection matrix
+    // culls the entire scene, which shows up as a black frame on restore.
+    const w = Math.max(1, window.innerWidth);
+    const h = Math.max(1, window.innerHeight);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);

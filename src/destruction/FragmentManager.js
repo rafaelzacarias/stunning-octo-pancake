@@ -42,6 +42,20 @@ export class FragmentManager {
     this._nextAssembly = 1;
     /** Normalised rotor speed (0..1), fed from the physics snapshot. */
     this.rpmNorm = 0;
+    /**
+     * Cut-resistance divisor supplied by the motor-torque upgrade. 1 = stock
+     * machine; higher values let the teeth chew through dense stock.
+     */
+    this.resistanceDivisor = 1;
+    /**
+     * Spawn-instance bookkeeping: every entry descended from one dropped item
+     * shares an instance, so the economy can pay out exactly once when that
+     * item has been fully processed.
+     * instanceId -> { def, count, sliced, paid }
+     */
+    this.instances = new Map();
+    this._nextInstance = 1;
+    this._suppressPayout = false;
     this.stats = { fragments: 0, slices: 0, triangles: 0 };
 
     // per-frame contact aggregation
@@ -53,7 +67,7 @@ export class FragmentManager {
   /* ------------------------------------------------------------- spawning */
 
   spawn(typeId, position, velocity) {
-    if (this.entries.size >= SETTINGS.maxScrapBodies) this._cullOldest(8);
+    if (!this._makeRoom(1)) return null;
 
     const def = getScrapDef(typeId);
     const built = def.build();
@@ -107,6 +121,7 @@ export class FragmentManager {
       pendingSlice: false,
     };
     this.entries.set(id, entry);
+    this._attachInstance(entry, this._beginInstance(def));
     this._refreshStats();
     return entry;
   }
@@ -126,9 +141,7 @@ export class FragmentManager {
     if (!def.assembly || !Array.isArray(def.parts)) {
       return this.spawn(typeId, position, velocity);
     }
-    if (this.entries.size + def.parts.length > SETTINGS.maxScrapBodies) {
-      this._cullOldest(def.parts.length + 4);
-    }
+    if (!this._makeRoom(def.parts.length)) return [];
 
     const assemblyId = `asm${this._nextAssembly++}`;
     const baseQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(
@@ -189,6 +202,7 @@ export class FragmentManager {
 
     const ids = this.physics.addAssembly(payload);
 
+    const instanceId = this._beginInstance(def);
     const created = [];
     ids.forEach((id, i) => {
       const p = pending[i];
@@ -212,6 +226,7 @@ export class FragmentManager {
         pendingSlice: false,
       };
       this.entries.set(id, entry);
+      this._attachInstance(entry, instanceId);
       created.push(entry);
     });
 
@@ -553,6 +568,18 @@ export class FragmentManager {
       }
     }
 
+    // Record the cut BEFORE destroying the parent. `_destroy` decrements the
+    // instance's live count, and when a slice produces two sub-minimum halves
+    // that count reaches zero immediately - if the slice were recorded after,
+    // the instance would already be gone and the item would never pay out.
+    const inst = this.instances.get(entry.instanceId);
+    if (inst) inst.sliced++;
+    this.hooks.onFragment?.({
+      material: entry.material,
+      volume: entry.volume,
+      worldPosition: job.point,
+    });
+
     this._destroy(entry);
     this.stats.slices++;
 
@@ -584,7 +611,15 @@ export class FragmentManager {
       return null;
     }
 
-    if (this.entries.size >= SETTINGS.maxFragments) this._cullOldest(6);
+    if (!this._makeRoom(1)) {
+      // No room even after a forced cull: turn this offcut into particles
+      // rather than exceeding the body budget.
+      recenter(geometry, _c);
+      parent.mesh.localToWorld(_c);
+      this.hooks.onShrapnel?.(_c, 6, parent.spec);
+      geometry.dispose();
+      return null;
+    }
 
     recenter(geometry, _c);
     geometry.computeBoundingBox();
@@ -639,6 +674,7 @@ export class FragmentManager {
       pendingSlice: false,
     };
     this.entries.set(id, entry);
+    this._attachInstance(entry, parent.instanceId);
     return entry;
   }
 
@@ -646,6 +682,7 @@ export class FragmentManager {
 
   _destroy(entry) {
     this._releaseAssembly(entry);
+    this._noteInstanceLoss(entry);
     this.group.remove(entry.mesh);
     entry.mesh.geometry.dispose();
     this.entries.delete(entry.id);
@@ -670,6 +707,7 @@ export class FragmentManager {
       const e = this.entries.get(id);
       if (!e) continue;
       this._releaseAssembly(e);
+      this._noteInstanceLoss(e);
       this.group.remove(e.mesh);
       e.mesh.geometry.dispose();
       this.entries.delete(id);
@@ -677,35 +715,87 @@ export class FragmentManager {
     this._refreshStats();
   }
 
-  /** Retire the oldest debris that has come to rest away from the throat. */
-  _cullOldest(n) {
-    const candidates = [];
+  /**
+   * Retire debris to stay inside the body budget.
+   *
+   * The only pieces that are genuinely unsafe to remove are the ones actually
+   * between the teeth right now — yanking those mid-cut is visible. Everything
+   * else is fair game, including material still sitting in the hopper or on
+   * the belt.
+   *
+   * This used to exempt anything above `chute.topY` (0.92 m), which is the
+   * hopper, the belt AND the throat. Under sustained auto-feed almost nothing
+   * was ever eligible, so the body count ran away to 1000+ against a budget of
+   * 110, dragging the physics step to ~28 s and the scene to 2.3 M triangles.
+   *
+   * @param {number} n how many to retire
+   * @param {boolean} force if true, ignore the throat exemption when the soft
+   *   pass could not free enough. Guarantees the budget is always enforceable.
+   */
+  _cullOldest(n, force = false) {
+    if (n <= 0) return 0;
+    const throat = this.shredder.throatBox;
+    const soft = [];
+    const hard = [];
+
     for (const e of this.entries.values()) {
-      const p = e.mesh.position;
-      const inThroat = this.shredder.throatBox.containsPoint(p) || p.y > LAYOUT.chute.topY;
-      if (inThroat) continue;
-      candidates.push(e);
+      if (throat.containsPoint(e.mesh.position)) hard.push(e);
+      else soft.push(e);
     }
-    candidates.sort((a, b) => (a.birth - b.birth) || (a.volume - b.volume));
+
+    // Oldest first, smallest first among equals: retire settled dust, not the
+    // large recognisable piece the player is watching.
+    const byAge = (a, b) => (a.birth - b.birth) || (a.volume - b.volume);
+    soft.sort(byAge);
+
+    const doomed = soft.slice(0, n);
+    if (force && doomed.length < n) {
+      hard.sort(byAge);
+      doomed.push(...hard.slice(0, n - doomed.length));
+    }
+
     const ids = [];
-    for (let i = 0; i < Math.min(n, candidates.length); i++) {
-      const e = candidates[i];
+    for (const e of doomed) {
+      this._releaseAssembly(e);
+      this._noteInstanceLoss(e);
       this.group.remove(e.mesh);
       e.mesh.geometry.dispose();
       this.entries.delete(e.id);
       ids.push(e.id);
     }
     if (ids.length) this.physics.removeBodies(ids);
+    return ids.length;
+  }
+
+  /** True once the scene is at its body budget and cannot free any more. */
+  atCapacity() {
+    return this.entries.size >= SETTINGS.maxScrapBodies;
+  }
+
+  /**
+   * Make room for `needed` new bodies, escalating to a forced cull so the
+   * budget can never be exceeded no matter where the debris is sitting.
+   */
+  _makeRoom(needed) {
+    const over = (this.entries.size + needed) - SETTINGS.maxScrapBodies;
+    if (over <= 0) return true;
+    let freed = this._cullOldest(over + 2, false);
+    if (freed < over) freed += this._cullOldest(over - freed, true);
+    return (this.entries.size + needed) <= SETTINGS.maxScrapBodies;
   }
 
   clear() {
+    // A manual wipe is not a payout event.
+    this._suppressPayout = true;
     for (const e of this.entries.values()) {
       this.group.remove(e.mesh);
       e.mesh.geometry.dispose();
     }
     this.entries.clear();
+    this.instances.clear();
     this.sliceQueue.length = 0;
     this.physics.clearDynamic();
+    this._suppressPayout = false;
     this._refreshStats();
   }
 
@@ -716,7 +806,68 @@ export class FragmentManager {
   _resistance(entry) {
     const thickness = 1 + entry.thickness * 90;
     const toughness = Math.max(0.25, entry.spec.shearImpulse / 1200);
-    return thickness * toughness;
+    return (thickness * toughness) / Math.max(0.2, this.resistanceDivisor);
+  }
+
+  /* ------------------------------------------------------ item accounting */
+
+  /** Open a new spawn instance for a dropped item. */
+  _beginInstance(def) {
+    const id = this._nextInstance++;
+    this.instances.set(id, {
+      def, roots: 0, count: 0, sliced: 0, paid: false,
+      rootMass: 0, lostMass: 0,
+    });
+    return id;
+  }
+
+  _attachInstance(entry, instanceId) {
+    entry.instanceId = instanceId;
+    const inst = this.instances.get(instanceId);
+    if (!inst) return;
+    inst.count++;
+    // "Roots" are the pieces the player actually dropped in: the whole item,
+    // or the parts of an assembly. Everything else is an offcut.
+    if (entry.generation === 0) {
+      inst.roots++;
+      inst.rootMass += entry.mass || 0;
+    }
+  }
+
+  /**
+   * One body of an instance is gone.
+   *
+   * An item pays out once the majority of its ORIGINAL mass has been cut
+   * apart. Two earlier rules both failed in practice: waiting for every body
+   * to vanish never fired, because offcuts sit in the collection bin forever;
+   * and waiting for every original part meant a lawnmower whose wheel rolled
+   * clear of the machine never paid at all.
+   */
+  _noteInstanceLoss(entry) {
+    const inst = this.instances.get(entry.instanceId);
+    if (!inst) return;
+    inst.count--;
+    if (entry.generation === 0) {
+      inst.roots--;
+      inst.lostMass += entry.mass || 0;
+    }
+
+    const processed = inst.rootMass > 0 ? inst.lostMass / inst.rootMass : 1;
+    const done = inst.roots <= 0 || processed >= 0.6;
+    if (!inst.paid && done && inst.sliced > 0 && !this._suppressPayout) {
+      inst.paid = true;
+      this.hooks.onItemDestroyed?.({
+        id: inst.def.id,
+        label: inst.def.label,
+        category: inst.def.category,
+        mass: inst.def.mass,
+        value: inst.def.value,
+        position: entry.mesh.position.clone(),
+      });
+    }
+    // Only forget the instance once nothing of it remains, so late offcuts
+    // still resolve to the right item.
+    if (inst.count <= 0) this.instances.delete(entry.instanceId);
   }
 
   /**
@@ -791,7 +942,6 @@ export class FragmentManager {
     this.time = time;
     this._engageThroat(dt);
     this.processSliceQueue();
-
     // Cut progress bleeds off slowly so stock that escapes the teeth heals its
     // "fatigue", but stays worked long enough to finish a cut it has started.
     const decay = Math.exp(-dt * 0.28);
@@ -801,7 +951,7 @@ export class FragmentManager {
     }
 
     if (this.entries.size > SETTINGS.maxFragments) {
-      this._cullOldest(this.entries.size - SETTINGS.maxFragments);
+      this._cullOldest(this.entries.size - SETTINGS.maxFragments, true);
     }
   }
 
